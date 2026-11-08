@@ -18,9 +18,11 @@ echo ""
 echo "[1/3] Installing Plugin Bundle..."
 if [ "${SCRIPT_DIR}" != "${TARGET_PLUGIN_DIR}" ]; then
   mkdir -p "${TARGET_PLUGIN_DIR}"
+  rm -rf "${TARGET_PLUGIN_DIR}/sidecars/context-panel/scripts"
   cp -R "${SCRIPT_DIR}/"* "${TARGET_PLUGIN_DIR}/"
   echo "      [OK] Plugin files installed to: ${TARGET_PLUGIN_DIR}"
 else
+  rm -rf "${TARGET_PLUGIN_DIR}/sidecars/context-panel/scripts"
   echo "      [OK] Plugin directory is current location (${TARGET_PLUGIN_DIR})"
 fi
 

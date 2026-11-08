@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { analyzeTranscript, analyzeGlobalTokens, resolveTranscriptPath } from './context-analyzer.mjs';
 
@@ -35,6 +36,7 @@ const inlineInjection = `
 
 html = html.replace('</body>', `${inlineInjection}</body>`);
 
-const outPath = process.argv[2] || path.join(process.env.ANTIGRAVITY_APP_DATA_DIR || '', 'brain', sessionData.meta.conversationId, 'context-dashboard.html');
+const appDataDir = process.env.ANTIGRAVITY_APP_DATA_DIR || path.join(os.homedir(), '.gemini', 'antigravity');
+const outPath = process.argv[2] || path.join(appDataDir, 'brain', sessionData.meta.conversationId, 'context-dashboard.html');
 fs.writeFileSync(outPath, html, 'utf8');
 console.log('Artifact written to:', outPath);

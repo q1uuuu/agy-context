@@ -38,7 +38,12 @@
 ### 3. 原生 Antigravity 工业美学设计
 * **象牙白与黑灰极简调色板**：适配 Antigravity 原生象牙白 (`#faf9f5`) 与深色曜石黑 (`#0f0f11`)，拒绝杂乱颜色与表情符号。
 * **浮动岛屿（Island）布局**：外层容器保留舒适呼吸边距，各功能块以圆角悬浮卡片（`rounded-xl`）呈现，绝不紧贴窗口边框。
+* **专属六边形品牌标识**：搭载 q1u 专属黑白灰极简工业风几何 Logo。
 * **零侵入架构**：通过 Antigravity 官方 Sidecar 守护进程规范管理生命周期，无需手动轮询，启动即用。
+
+### 4. 检查更新与一键无感升级
+* **全自动在线版本感知**：静默与 GitHub Releases 对齐，当发现新版本时在顶栏低调浮现呼吸徽章。
+* **一键无缝热重载**：内置专属更新弹窗，支持查阅版本更新日志（Release Notes），点击「立即更新」全自动完成跨平台下载、解压、备份、原子覆写与后台服务热重启。
 
 ---
 
@@ -59,23 +64,6 @@ chmod +x install.sh && ./install.sh
 ```
 
 安装脚本会自动将扩展放置到 Antigravity 全局插件目录并自动热激活 Sidecar 服务。
-
----
-
-### 方式二：团队/项目代码仓库自动随附
-
-若希望团队成员拉取项目后**开箱即用、免手动安装**：
-1. 在项目根目录下创建目录：
-   ```text
-   your-project/
-   └── .agents/
-       └── plugins/
-           └── agy-context/
-   ```
-2. 将本插件内容放入上述目录并随 Git 提交。
-3. 任何成员在 Antigravity 中打开此项目时，编辑器将自动挂载该项目插件。
-
----
 
 ## 📌 唤出与使用
 
@@ -100,4 +88,5 @@ chmod +x install.sh && ./install.sh
 ## 📄 License & Credits
 
 * **Author**: q1u
+* **Repository**: [https://github.com/q1uuuu/agy-context](https://github.com/q1uuuu/agy-context)
 * **Platform**: Google Antigravity
