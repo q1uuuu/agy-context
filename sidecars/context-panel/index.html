@@ -218,15 +218,19 @@
     <!-- Top Navigation Header -->
     <header class="flex items-center justify-between pb-3 border-b border-[var(--border)]">
       <div class="flex items-center space-x-2.5">
-        <div class="w-6 h-6 rounded-md border border-[var(--border)] bg-[var(--onyx-key)] shadow-[var(--onyx-key-shadow)] flex items-center justify-center flex-shrink-0 text-[var(--foreground)]">
-          <svg class="w-3.5 h-3.5 text-[var(--foreground)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
+        <div class="w-6 h-6 rounded-md border border-[var(--border)] bg-[var(--onyx-key)] shadow-[var(--onyx-key-shadow)] flex items-center justify-center flex-shrink-0 overflow-hidden" title="agy-context by q1u">
+          <img src="/logo.svg" alt="q1u logo" class="w-4 h-4 object-contain" />
         </div>
         <h1 id="top-title" class="text-xs sm:text-sm font-semibold tracking-tight text-[var(--foreground)]">当前会话深度上下文</h1>
       </div>
 
       <div class="flex items-center space-x-2">
+        <!-- Version & Update Button -->
+        <button id="version-btn" onclick="openUpdateModal()" class="px-2.5 py-1 text-xs rounded-lg border border-[var(--border)] bg-[var(--onyx-key)] hover:bg-[var(--card-hover)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] font-mono flex items-center gap-1.5 shadow-[var(--onyx-key-shadow)] transition select-none active:scale-95" title="点击检查更新">
+          <span id="version-label">v1.0.0</span>
+          <span id="update-badge" class="w-1.5 h-1.5 rounded-full bg-[var(--primary)] hidden animate-pulse"></span>
+        </button>
+
         <button id="refresh-btn" onclick="refreshCurrentView()" class="px-2.5 py-1 text-xs rounded-lg border border-[var(--border)] bg-[var(--onyx-key)] hover:bg-[var(--card-hover)] text-[var(--foreground)] font-medium flex items-center gap-1.5 shadow-[var(--onyx-key-shadow)] transition select-none active:scale-95">
           <svg id="refresh-icon" class="w-3 h-3 text-[var(--muted-foreground)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1386,12 +1390,274 @@
       return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    // ==========================================
+    // Update Checker & One-Click Upgrade Engine
+    // ==========================================
+    let cachedUpdateInfo = null;
+    let isUpdating = false;
+
+    function openUpdateModal() {
+      const modal = document.getElementById('update-modal');
+      const card = document.getElementById('update-modal-card');
+      if (!modal) return;
+      modal.classList.remove('hidden');
+      requestAnimationFrame(() => {
+        modal.classList.remove('opacity-0');
+        if (card) {
+          card.classList.remove('scale-95');
+          card.classList.add('scale-100');
+        }
+      });
+      fetchUpdateStatus(true);
+    }
+
+    function closeUpdateModal() {
+      if (isUpdating) return; // Prevent closing while applying update
+      const modal = document.getElementById('update-modal');
+      const card = document.getElementById('update-modal-card');
+      if (!modal) return;
+      modal.classList.add('opacity-0');
+      if (card) {
+        card.classList.remove('scale-100');
+        card.classList.add('scale-95');
+      }
+      setTimeout(() => {
+        modal.classList.add('hidden');
+      }, 200);
+    }
+
+    async function fetchUpdateStatus(isUserTriggered = false) {
+      const btn = document.getElementById('modal-action-btn');
+      const txt = document.getElementById('modal-action-text');
+      const logEl = document.getElementById('modal-changelog');
+      const currVerEl = document.getElementById('modal-curr-ver');
+      const latestVerEl = document.getElementById('modal-latest-ver');
+      const badgeEl = document.getElementById('modal-ver-status-badge');
+      const topBadge = document.getElementById('update-badge');
+      const topVerLabel = document.getElementById('version-label');
+      const dateEl = document.getElementById('modal-release-date');
+
+      if (isUserTriggered && txt) {
+        txt.textContent = '检查中...';
+      }
+
+      try {
+        const fetchFn = (window.sidecar && window.sidecar.fetch) ? window.sidecar.fetch : fetch;
+        const res = await fetchFn('/api/update/check');
+        if (!res.ok) throw new Error('API ' + res.status);
+        const data = await res.json();
+        cachedUpdateInfo = data;
+
+        if (topVerLabel) topVerLabel.textContent = `v${data.currentVersion}`;
+        if (currVerEl) currVerEl.textContent = `v${data.currentVersion}`;
+        if (latestVerEl) latestVerEl.textContent = `v${data.latestVersion}`;
+
+        if (data.releaseDate && dateEl) {
+          try {
+            const d = new Date(data.releaseDate);
+            dateEl.textContent = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          } catch (e) {
+            dateEl.textContent = '';
+          }
+        }
+
+        if (data.hasUpdate) {
+          if (topBadge) topBadge.classList.remove('hidden');
+          if (badgeEl) {
+            badgeEl.textContent = '可升级';
+            badgeEl.className = 'px-1.5 py-0.2 rounded text-[9px] font-mono border border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)] font-semibold';
+          }
+          if (txt) txt.textContent = '立即一键更新';
+          if (btn) btn.className = 'px-3.5 py-1.5 text-xs rounded-lg font-medium bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm hover:opacity-90 active:scale-95 transition flex items-center gap-1.5';
+          if (logEl) logEl.textContent = data.changelog || '常规性能提升与稳定性优化。';
+        } else {
+          if (topBadge) topBadge.classList.add('hidden');
+          if (badgeEl) {
+            badgeEl.textContent = '已最新';
+            badgeEl.className = 'px-1.5 py-0.2 rounded text-[9px] font-mono border border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)]';
+          }
+          if (txt) txt.textContent = '重新检查';
+          if (logEl) logEl.textContent = '当前已是最新版本，无需更新。\n\n项目主页：https://github.com/q1uuuu/agy-context';
+        }
+      } catch (err) {
+        if (logEl && isUserTriggered) {
+          logEl.textContent = '检查更新失败：' + err.message + '\n请检查网络连接或稍后重试。';
+        }
+        if (txt) txt.textContent = '重试检查';
+      }
+    }
+
+    async function handleUpdateAction() {
+      if (isUpdating) return;
+
+      if (!cachedUpdateInfo || !cachedUpdateInfo.hasUpdate) {
+        fetchUpdateStatus(true);
+        return;
+      }
+
+      // Execute One-Click Update
+      isUpdating = true;
+      const btn = document.getElementById('modal-action-btn');
+      const txt = document.getElementById('modal-action-text');
+      const progContainer = document.getElementById('modal-progress-container');
+      const progBar = document.getElementById('modal-progress-bar');
+      const progMsg = document.getElementById('modal-progress-msg');
+      const progPct = document.getElementById('modal-progress-pct');
+
+      if (btn) btn.disabled = true;
+      if (txt) txt.textContent = '正在升级...';
+      if (progContainer) progContainer.classList.remove('hidden');
+
+      const setProg = (percent, msg) => {
+        if (progBar) progBar.style.width = `${percent}%`;
+        if (progPct) progPct.textContent = `${percent}%`;
+        if (progMsg) progMsg.textContent = msg;
+      };
+
+      setProg(15, '正在连接并下载最新安装包...');
+
+      try {
+        const fetchFn = (window.sidecar && window.sidecar.fetch) ? window.sidecar.fetch : fetch;
+        
+        let simP = 15;
+        const simInterval = setInterval(() => {
+          if (simP < 80) {
+            simP += Math.floor(Math.random() * 8) + 3;
+            setProg(Math.min(80, simP), simP > 50 ? '正在解压并校验组件...' : '正在下载最新安装包...');
+          }
+        }, 300);
+
+        const res = await fetchFn('/api/update/apply', { method: 'POST' });
+        clearInterval(simInterval);
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || ('HTTP ' + res.status));
+        }
+
+        setProg(90, '文件写入完毕，正在热重载后台服务...');
+
+        // Heartbeat probe for restarted sidecar daemon
+        let attempts = 0;
+        const maxAttempts = 25; // ~12 seconds timeout
+        const probeInterval = setInterval(async () => {
+          attempts++;
+          try {
+            const probeRes = await fetchFn('/api/context?_=' + Date.now(), { timeout: 1000 });
+            if (probeRes.ok) {
+              clearInterval(probeInterval);
+              setProg(100, '升级成功！服务已恢复');
+              setTimeout(() => {
+                isUpdating = false;
+                closeUpdateModal();
+                refreshCurrentView();
+                fetchUpdateStatus(false);
+              }, 1200);
+            }
+          } catch (e) {
+            if (attempts >= maxAttempts) {
+              clearInterval(probeInterval);
+              setProg(100, '更新已就绪，请重新打开面板');
+              if (btn) btn.disabled = false;
+              if (txt) txt.textContent = '完成';
+              isUpdating = false;
+            }
+          }
+        }, 500);
+
+      } catch (err) {
+        setProg(0, '更新遇到错误: ' + err.message);
+        if (btn) btn.disabled = false;
+        if (txt) txt.textContent = '重试';
+        isUpdating = false;
+      }
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
       fetchSessionContext();
+      fetchUpdateStatus(false);
       setInterval(() => {
         refreshCurrentView();
       }, 10000);
     });
+  </script>
+
+  <!-- Update Modal (Antigravity 2.0 Onyx Floating Island) -->
+  <div id="update-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm hidden opacity-0 transition-opacity duration-200">
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 shadow-2xl max-w-md w-full space-y-4 transform scale-95 transition-transform duration-200" id="update-modal-card">
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between pb-3 border-b border-[var(--border)]">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-6 h-6 rounded-md border border-[var(--border)] bg-[var(--onyx-key)] shadow-[var(--onyx-key-shadow)] flex items-center justify-center overflow-hidden flex-shrink-0">
+            <img src="/logo.svg" alt="q1u logo" class="w-4 h-4 object-contain" />
+          </div>
+          <div>
+            <h3 class="text-xs sm:text-sm font-semibold text-[var(--foreground)]">版本更新检查</h3>
+            <p class="text-[10px] text-[var(--muted-foreground)]">Antigravity Context & Token Inspector</p>
+          </div>
+        </div>
+        <button onclick="closeUpdateModal()" class="w-6 h-6 rounded-md hover:bg-[var(--card-hover)] flex items-center justify-center text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Version Badges Diff -->
+      <div class="flex items-center justify-between bg-[var(--card-subtle)] p-3 rounded-xl border border-[var(--border)]">
+        <div>
+          <span class="text-[10px] uppercase text-[var(--muted-foreground)] block">当前安装</span>
+          <span id="modal-curr-ver" class="text-xs font-mono font-bold text-[var(--foreground)]">v1.0.0</span>
+        </div>
+        <div class="flex items-center text-[var(--muted-foreground)] px-2">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+        </div>
+        <div class="text-right">
+          <span class="text-[10px] uppercase text-[var(--muted-foreground)] block">最新发布</span>
+          <div class="flex items-center justify-end space-x-1.5">
+            <span id="modal-latest-ver" class="text-xs font-mono font-bold text-[var(--foreground)]">v1.0.0</span>
+            <span id="modal-ver-status-badge" class="px-1.5 py-0.2 rounded text-[9px] font-mono border border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)]">已最新</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Changelog Section -->
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between text-[11px] text-[var(--muted-foreground)]">
+          <span class="font-medium text-[var(--foreground)]">更新日志</span>
+          <span id="modal-release-date" class="text-[10px] font-mono">--</span>
+        </div>
+        <div id="modal-changelog" class="bg-[var(--card-subtle)] border border-[var(--border)] rounded-xl p-3 text-xs text-[var(--muted-foreground)] max-h-40 overflow-y-auto font-mono whitespace-pre-wrap leading-relaxed select-text">
+          正在获取更新信息...
+        </div>
+      </div>
+
+      <!-- Progress Bar (Hidden by default, shown during upgrade) -->
+      <div id="modal-progress-container" class="hidden space-y-1.5">
+        <div class="flex items-center justify-between text-xs">
+          <span id="modal-progress-msg" class="text-[var(--foreground)] font-medium">正在下载更新包...</span>
+          <span id="modal-progress-pct" class="font-mono text-[var(--muted-foreground)]">0%</span>
+        </div>
+        <div class="w-full h-1.5 rounded-full bg-[var(--card-subtle)] border border-[var(--border)] overflow-hidden">
+          <div id="modal-progress-bar" class="h-full bg-[var(--primary)] transition-all duration-300" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <!-- Footer Buttons -->
+      <div class="flex items-center justify-between pt-2 border-t border-[var(--border)] gap-2">
+        <a id="modal-github-link" href="https://github.com/q1uuuu/agy-context" target="_blank" rel="noopener noreferrer" class="px-3 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--card-subtle)] hover:bg-[var(--card-hover)] text-[var(--foreground)] transition inline-flex items-center gap-1.5 font-medium">
+          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+          <span>GitHub 仓库</span>
+        </a>
+
+        <div class="flex items-center space-x-2">
+          <button id="modal-action-btn" onclick="handleUpdateAction()" class="px-3.5 py-1.5 text-xs rounded-lg font-medium bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm hover:opacity-90 active:scale-95 transition flex items-center gap-1.5">
+            <span id="modal-action-text">检查更新</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
   </script>
 </body>
 </html>

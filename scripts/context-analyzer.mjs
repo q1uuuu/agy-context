@@ -6,6 +6,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import cp from 'node:child_process';
 import https from 'node:https';
 import crypto from 'node:crypto';
@@ -64,7 +65,7 @@ export function resolveTranscriptPath(convId, customPath) {
   }
 
   const appDataDir = process.env.ANTIGRAVITY_APP_DATA_DIR || 
-    path.join(process.env.USERPROFILE || process.env.HOME || '', '.gemini', 'antigravity');
+    path.join(os.homedir(), '.gemini', 'antigravity');
   const targetConvId = convId || process.env.ANTIGRAVITY_CONVERSATION_ID;
 
   if (targetConvId) {
@@ -131,22 +132,503 @@ function getModelPricing(modelName) {
 }
 
 /**
- * Runs the native Antigravity token scanner using Windows's built-in winsqlite3 engine
- * and Protobuf decoder. 100% self-calculating, zero external dependencies.
- * @param {boolean} [force=false]
- * @returns {object|null}
+ * Pure JavaScript Protobuf wire format decoding utilities
+ * Zero external dependencies.
  */
-export function runNativeStatsScan(force = false) {
-  const now = Date.now();
-  if (!force && cachedNativeStats && (now - lastNativeScanMs < 30000)) {
-    return cachedNativeStats;
+function decodeVarint(buf, offset) {
+  let res = 0n;
+  let shift = 0n;
+  let o = offset;
+  while (o < buf.length) {
+    const b = buf[o++];
+    res |= BigInt(b & 0x7f) << shift;
+    if ((b & 0x80) === 0) return { val: Number(res), next: o };
+    shift += 7n;
+  }
+  return null;
+}
+
+function getBytesField(fieldNum, buf) {
+  if (!buf) return null;
+  let o = 0;
+  while (o < buf.length) {
+    const tag = decodeVarint(buf, o);
+    if (!tag) break;
+    o = tag.next;
+    const num = tag.val >>> 3;
+    const wire = tag.val & 7;
+    if (wire === 0) {
+      const v = decodeVarint(buf, o);
+      if (!v) break;
+      o = v.next;
+    } else if (wire === 1) {
+      o += 8;
+    } else if (wire === 5) {
+      o += 4;
+    } else if (wire === 2) {
+      const len = decodeVarint(buf, o);
+      if (!len) break;
+      o = len.next;
+      if (num === fieldNum) {
+        return buf.subarray(o, o + len.val);
+      }
+      o += len.val;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
+function getVarintField(fieldNum, buf) {
+  if (!buf) return null;
+  let o = 0;
+  while (o < buf.length) {
+    const tag = decodeVarint(buf, o);
+    if (!tag) break;
+    o = tag.next;
+    const num = tag.val >>> 3;
+    const wire = tag.val & 7;
+    if (wire === 0) {
+      const v = decodeVarint(buf, o);
+      if (!v) break;
+      o = v.next;
+      if (num === fieldNum) return v.val;
+    } else if (wire === 1) {
+      o += 8;
+    } else if (wire === 5) {
+      o += 4;
+    } else if (wire === 2) {
+      const len = decodeVarint(buf, o);
+      if (!len) break;
+      o = len.next + len.val;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
+function getStringField(fieldNum, buf) {
+  const b = getBytesField(fieldNum, buf);
+  if (!b || b.length === 0) return null;
+  try {
+    const s = b.toString('utf8').trim();
+    return s.length > 0 ? s : null;
+  } catch { return null; }
+}
+
+function getDuration(buf) {
+  if (!buf) return null;
+  const sec = getVarintField(1, buf) || 0;
+  const nanos = getVarintField(2, buf) || 0;
+  if (nanos >= 1e9) return null;
+  const val = sec + nanos / 1e9;
+  return (val > 0 && Number.isFinite(val)) ? val : null;
+}
+
+/**
+ * Executes a SQLite query using the system's sqlite3 CLI binary
+ * @param {string} dbPath
+ * @param {string} sql
+ * @param {number} [timeout=8000]
+ * @returns {Array} Array of parsed JSON objects
+ */
+function querySqlite(dbPath, sql, timeout = 8000) {
+  const stdout = cp.execFileSync('sqlite3', ['-batch', '-json', dbPath, sql], {
+    encoding: 'utf8',
+    maxBuffer: 50 * 1024 * 1024,
+    timeout,
+    windowsHide: true
+  });
+  return JSON.parse(stdout.trim() || '[]');
+}
+
+/**
+ * Cross-platform Pure JavaScript Native Antigravity SQLite & Protobuf scanner.
+ * 100% self-calculating, zero external npm dependencies.
+ * @returns {object}
+ */
+export function scanNativeStatsJs() {
+  const home = os.homedir();
+  const geminiDir = path.join(home, '.gemini');
+  const dbFiles = [];
+
+  if (fs.existsSync(geminiDir)) {
+    try {
+      for (const d of fs.readdirSync(geminiDir)) {
+        if (d.startsWith('antigravity')) {
+          const cDir = path.join(geminiDir, d, 'conversations');
+          if (fs.existsSync(cDir)) {
+            for (const f of fs.readdirSync(cDir)) {
+              if (f.endsWith('.db') && !f.includes('-shm') && !f.includes('-wal')) {
+                dbFiles.push(path.join(cDir, f));
+              }
+            }
+          }
+        }
+      }
+    } catch {}
   }
 
+  const events = [];
+  const samples = [];
+  const scannedSources = new Set();
+  let totalGenerationsScanned = 0;
+  let skippedLarge = 0;
+  let unreadable = 0;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const now = new Date();
+  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const start30Sec = Math.floor(new Date(todayDate.getTime() - 29 * 86400000).getTime() / 1000);
+  const maxAge = 7 * 24 * 3600;
+
+  // Scan archive db if exists
+  const archivePath = path.join(geminiDir, 'antigravity', 'token_usage_archive.db');
+  const liveSourceKeys = new Set();
+  for (const p of dbFiles) {
+    let rel = p.replace(/\\/g, '/');
+    const idx = rel.indexOf('/.gemini/');
+    if (idx >= 0) rel = rel.substring(idx + 9);
+    liveSourceKeys.add(rel.toLowerCase());
+  }
+
+  const archivedIdsBySource = new Map();
+  if (fs.existsSync(archivePath)) {
+    try {
+      const srcRows = querySqlite(archivePath, 'SELECT source_key FROM archived_sources');
+      for (const r of srcRows) {
+        if (r.source_key) scannedSources.add(r.source_key);
+      }
+
+      const genRows = querySqlite(
+        archivePath,
+        'SELECT source_key, generation_idx, model, input_tokens, output_tokens, cached_tokens, total_tokens, timestamp_seconds, valid, oversized FROM archived_generations ORDER BY source_key, generation_idx'
+      );
+      for (const r of genRows) {
+        const src = r.source_key || '';
+        const genIdx = Number(r.generation_idx);
+        scannedSources.add(src);
+        if (liveSourceKeys.has(src.toLowerCase())) {
+          if (!archivedIdsBySource.has(src)) archivedIdsBySource.set(src, new Set());
+          archivedIdsBySource.get(src).add(genIdx);
+        }
+        totalGenerationsScanned++;
+        if (Number(r.valid) !== 1) {
+          if (Number(r.oversized) === 1) skippedLarge++;
+          continue;
+        }
+
+        const ts = Number(r.timestamp_seconds);
+        const uInp = Number(r.input_tokens || 0);
+        const uOut = Number(r.output_tokens || 0);
+        const uCch = Number(r.cached_tokens || 0);
+        const uTot = Number(r.total_tokens || 0);
+
+        if (ts >= start30Sec) {
+          events.push({
+            model: r.model || '未知模型',
+            input_tokens: uInp,
+            output_tokens: uOut,
+            cached_tokens: uCch,
+            total_tokens: uTot,
+            timestamp_seconds: ts
+          });
+        }
+      }
+    } catch (e) {
+      // Graceful fallback if archive db is locked or unavailable
+    }
+  }
+
+  // Scan live conversation dbs
+  for (const dbPath of dbFiles) {
+    let rel = dbPath.replace(/\\/g, '/');
+    const idx = rel.indexOf('/.gemini/');
+    if (idx >= 0) rel = rel.substring(idx + 9);
+    const sourceKey = rel;
+    scannedSources.add(sourceKey);
+
+    const archivedIds = archivedIdsBySource.get(sourceKey) || null;
+    let source = 'antigravity';
+    try {
+      const parentDir = path.dirname(path.dirname(dbPath));
+      if (parentDir) source = path.basename(parentDir);
+    } catch {}
+
+    // Read steps
+    const stepRecords = [];
+    try {
+      const stepsSql = 'SELECT CASE WHEN length(metadata) <= 65536 THEN hex(metadata) ELSE NULL END as m, status, CASE WHEN length(step_payload) <= 1048576 THEN hex(step_payload) ELSE NULL END as p FROM steps WHERE step_type = 15 ORDER BY idx';
+      const stepsRows = querySqlite(dbPath, stepsSql, 5000);
+      for (const r of stepsRows) {
+        let ts = null;
+        let textComplete = false;
+        if (r.m) {
+          const metaBuf = Buffer.from(r.m, 'hex');
+          const f1 = getBytesField(1, metaBuf);
+          if (f1) {
+            const sec = getVarintField(1, f1);
+            if (sec && sec > 0) ts = sec;
+          }
+        }
+        if (Number(r.status) === 3 && r.p) {
+          const payBuf = Buffer.from(r.p, 'hex');
+          const resp = getBytesField(20, payBuf);
+          if (resp) {
+            const stopReason = getVarintField(12, resp);
+            const textResp = getStringField(1, resp);
+            const toolCalls = getBytesField(7, resp);
+            if (stopReason === 2 && textResp && !toolCalls) {
+              textComplete = true;
+            }
+          }
+        }
+        stepRecords.push({ ts, textComplete });
+      }
+    } catch (e) {
+      unreadable++;
+      continue;
+    }
+
+    // Read gen_metadata
+    try {
+      const genSql = 'SELECT idx, hex(data) as h, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx';
+      const genRows = querySqlite(dbPath, genSql, 10000);
+      let ordinal = 0;
+      for (const r of genRows) {
+        const curOrdinal = ordinal++;
+        const genIdx = Number(r.idx);
+        const isArchived = archivedIds && archivedIds.has(genIdx);
+        if (!isArchived) totalGenerationsScanned++;
+
+        const blobSize = Number(r.len || 0);
+        if (blobSize > 64 * 1024 * 1024 || !r.h) {
+          if (!isArchived) skippedLarge++;
+          continue;
+        }
+
+        const buf = Buffer.from(r.h, 'hex');
+        const stepTs = curOrdinal < stepRecords.length ? stepRecords[curOrdinal].ts : null;
+        const isComplete = curOrdinal < stepRecords.length ? stepRecords[curOrdinal].textComplete : false;
+
+        const wrapped = getBytesField(1, buf);
+        if (!wrapped) continue;
+
+        // Performance Sample
+        if (isComplete && stepTs) {
+          const usage = getBytesField(4, wrapped);
+          if (usage) {
+            const bodyTokens = getVarintField(10, usage);
+            const firstTextSec = getDuration(getBytesField(11, wrapped));
+            const streamSec = getDuration(getBytesField(12, wrapped));
+            if (bodyTokens && bodyTokens >= 100 && streamSec && streamSec >= 1.0 && firstTextSec) {
+              const model = getStringField(21, wrapped) || getStringField(19, wrapped);
+              if (model) {
+                samples.push({
+                  model,
+                  source,
+                  timestamp: stepTs,
+                  first_text_seconds: firstTextSec,
+                  body_tokens_per_second: bodyTokens / streamSec
+                });
+              }
+            }
+          }
+        }
+
+        if (isArchived) continue;
+
+        // Generation Event
+        const genUsage = getBytesField(4, wrapped);
+        if (genUsage) {
+          const sysPrompt = getVarintField(1, genUsage) || 0;
+          const rawInp = getVarintField(2, genUsage) || 0;
+          const outTok = getVarintField(3, genUsage) || 0;
+          const cacheTok = getVarintField(5, genUsage) || 0;
+          const inpTok = sysPrompt + rawInp;
+          const generated = rawInp !== 0 || outTok !== 0 || cacheTok !== 0;
+          const modelId = getStringField(19, wrapped);
+          const label = getStringField(21, wrapped);
+          if ((modelId || label || generated) && (generated || inpTok !== 0)) {
+            const timing = getBytesField(9, wrapped);
+            const t4 = timing ? getBytesField(4, timing) : null;
+            const embTs = t4 ? getVarintField(1, t4) : null;
+            const ts = (embTs && embTs > 0) ? embTs : stepTs;
+            if (ts && ts >= start30Sec) {
+              events.push({
+                model: label || modelId || '未知模型',
+                input_tokens: inpTok,
+                output_tokens: outTok,
+                cached_tokens: cacheTok,
+                total_tokens: inpTok + cacheTok + outTok,
+                timestamp_seconds: ts
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Next db
+    }
+  }
+
+  // Summarize Performance Samples
+  const recentSamples = samples.filter(s => s.timestamp >= nowSec - maxAge && s.timestamp <= nowSec);
+  recentSamples.sort((a, b) => b.timestamp - a.timestamp);
+  const sampleLimit = Math.min(10, recentSamples.length);
+  const recent = recentSamples.slice(0, sampleLimit);
+
+  let perfJson = null;
+  if (recent.length > 0) {
+    const ttfts = recent.map(s => s.first_text_seconds).sort((a, b) => a - b);
+    const speeds = recent.map(s => s.body_tokens_per_second).sort((a, b) => a - b);
+    const modelsSet = new Set(recent.map(s => s.model));
+    const sourcesSet = new Set(recent.map(s => s.source));
+
+    const medTtft = ttfts.length % 2 === 0
+      ? (ttfts[ttfts.length / 2 - 1] + ttfts[ttfts.length / 2]) / 2
+      : ttfts[Math.floor(ttfts.length / 2)];
+    const medSpeed = speeds.length % 2 === 0
+      ? (speeds[speeds.length / 2 - 1] + speeds[speeds.length / 2]) / 2
+      : speeds[Math.floor(speeds.length / 2)];
+
+    perfJson = {
+      model_count: modelsSet.size,
+      source_count: sourcesSet.size,
+      sample_count: recent.length,
+      first_text_seconds: Number(medTtft.toFixed(7)),
+      body_tokens_per_second: Number(medSpeed.toFixed(7)),
+      last_activity: recent[0].timestamp
+    };
+  }
+
+  // Aggregate Token Totals
+  events.sort((a, b) => a.timestamp_seconds - b.timestamp_seconds);
+
+  const createTotals = () => ({ input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0, request_count: 0 });
+  const addEvent = (t, e) => {
+    t.input_tokens += e.input_tokens;
+    t.output_tokens += e.output_tokens;
+    t.cached_tokens += e.cached_tokens;
+    t.total_tokens += e.total_tokens;
+    t.request_count += 1;
+  };
+
+  const todayTot = createTotals();
+  const yestTot = createTotals();
+  const d3Tot = createTotals();
+  const d7Tot = createTotals();
+  const d30Tot = createTotals();
+
+  const yestDate = new Date(todayDate.getTime() - 86400000);
+  const d3Start = new Date(todayDate.getTime() - 2 * 86400000);
+  const d7Start = new Date(todayDate.getTime() - 6 * 86400000);
+
+  const dailyMap = new Map();
+  const hourlyMap = new Map();
+  const byModelToday = new Map();
+  const byModelYesterday = new Map();
+  const byModel3Days = new Map();
+  const byModel7Days = new Map();
+  const byModel30Days = new Map();
+
+  let lastAct = 0;
+  const pad = n => String(n).padStart(2, '0');
+
+  for (const e of events) {
+    const dt = new Date(e.timestamp_seconds * 1000);
+    const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+    const hourStr = `${dateStr} ${pad(dt.getHours())}:00`;
+    const eventDate = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+
+    addEvent(d30Tot, e);
+
+    if (!dailyMap.has(dateStr)) dailyMap.set(dateStr, createTotals());
+    addEvent(dailyMap.get(dateStr), e);
+
+    if (!hourlyMap.has(hourStr)) hourlyMap.set(hourStr, createTotals());
+    addEvent(hourlyMap.get(hourStr), e);
+
+    if (!byModel30Days.has(e.model)) byModel30Days.set(e.model, createTotals());
+    addEvent(byModel30Days.get(e.model), e);
+
+    if (eventDate.getTime() === todayDate.getTime()) {
+      addEvent(todayTot, e);
+      if (!byModelToday.has(e.model)) byModelToday.set(e.model, createTotals());
+      addEvent(byModelToday.get(e.model), e);
+    }
+
+    if (eventDate.getTime() === yestDate.getTime()) {
+      addEvent(yestTot, e);
+      if (!byModelYesterday.has(e.model)) byModelYesterday.set(e.model, createTotals());
+      addEvent(byModelYesterday.get(e.model), e);
+    }
+
+    if (eventDate >= d3Start && eventDate <= todayDate) {
+      addEvent(d3Tot, e);
+      if (!byModel3Days.has(e.model)) byModel3Days.set(e.model, createTotals());
+      addEvent(byModel3Days.get(e.model), e);
+    }
+
+    if (eventDate >= d7Start && eventDate <= todayDate) {
+      addEvent(d7Tot, e);
+      if (!byModel7Days.has(e.model)) byModel7Days.set(e.model, createTotals());
+      addEvent(byModel7Days.get(e.model), e);
+    }
+
+    if (e.timestamp_seconds > lastAct) lastAct = e.timestamp_seconds;
+  }
+
+  const mapToModels = (map) => {
+    return Array.from(map.entries())
+      .map(([model, t]) => ({ model, ...t }))
+      .sort((a, b) => b.total_tokens - a.total_tokens);
+  };
+
+  const dailyList = Array.from(dailyMap.entries())
+    .map(([date, t]) => ({ date, ...t }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const hourlyList = Array.from(hourlyMap.entries())
+    .map(([hour, t]) => ({ hour, ...t }))
+    .sort((a, b) => a.hour.localeCompare(b.hour));
+
+  return {
+    recent_performance: perfJson,
+    today: todayTot,
+    yesterday: yestTot,
+    last_3_days: d3Tot,
+    last_7_days: d7Tot,
+    last_30_days: d30Tot,
+    daily: dailyList,
+    hourly: hourlyList,
+    by_model_today: mapToModels(byModelToday),
+    by_model_yesterday: mapToModels(byModelYesterday),
+    by_model_3_days: mapToModels(byModel3Days),
+    by_model_7_days: mapToModels(byModel7Days),
+    by_model: mapToModels(byModel30Days),
+    databases_scanned: scannedSources.size,
+    generations_scanned: totalGenerationsScanned,
+    skipped_large_records: skippedLarge,
+    unreadable_databases: unreadable,
+    last_activity: lastAct > 0 ? lastAct : null,
+    generated_at: nowSec
+  };
+}
+
+/**
+ * Fallback scanner for Windows using PowerShell & winsqlite3.dll
+ * @returns {object|null}
+ */
+export function scanNativeStatsPs1() {
+  const home = os.homedir();
   const candidates = [
     path.join(__dirname, 'native-token-scanner.ps1'),
     path.join(__dirname, 'scripts', 'native-token-scanner.ps1'),
-    path.join(process.env.USERPROFILE || '', '.gemini', 'config', 'plugins', 'agy-context', 'scripts', 'native-token-scanner.ps1'),
-    path.join(process.env.USERPROFILE || '', '.gemini', 'config', 'plugins', 'agy-context', 'sidecars', 'context-panel', 'scripts', 'native-token-scanner.ps1')
+    path.join(home, '.gemini', 'config', 'plugins', 'agy-context', 'scripts', 'native-token-scanner.ps1'),
+    path.join(home, '.gemini', 'config', 'plugins', 'agy-context', 'sidecars', 'context-panel', 'scripts', 'native-token-scanner.ps1')
   ];
 
   let scriptPath = null;
@@ -157,9 +639,7 @@ export function runNativeStatsScan(force = false) {
     }
   }
 
-  if (!scriptPath) {
-    return cachedNativeStats;
-  }
+  if (!scriptPath) return null;
 
   try {
     const stdout = cp.execFileSync('powershell.exe', [
@@ -172,15 +652,49 @@ export function runNativeStatsScan(force = false) {
       timeout: 10000,
       windowsHide: true
     });
-
-    const parsed = JSON.parse(stdout.trim());
-    cachedNativeStats = parsed;
-    lastNativeScanMs = Date.now();
-    return parsed;
+    return JSON.parse(stdout.trim());
   } catch (err) {
-    console.error('[agy-context] Native token scan error:', err.message);
+    console.error('[agy-context] PowerShell token scan error:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Runs the native Antigravity token scanner across all platforms (macOS / Linux / Windows).
+ * 100% self-calculating, zero external dependencies.
+ * @param {boolean} [force=false]
+ * @returns {object|null}
+ */
+export function runNativeStatsScan(force = false) {
+  const now = Date.now();
+  if (!force && cachedNativeStats && (now - lastNativeScanMs < 30000)) {
     return cachedNativeStats;
   }
+
+  try {
+    let result = null;
+    // On macOS / Linux, sqlite3 CLI is standard and natively fast
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      result = scanNativeStatsJs();
+    } else {
+      // On Windows, try pure JS first if sqlite3 CLI is in PATH, then fall back to PowerShell winsqlite3
+      try {
+        result = scanNativeStatsJs();
+      } catch (e) {
+        result = scanNativeStatsPs1();
+      }
+    }
+
+    if (result) {
+      cachedNativeStats = result;
+      lastNativeScanMs = Date.now();
+      return result;
+    }
+  } catch (err) {
+    console.error('[agy-context] Native token scan error:', err.message);
+  }
+
+  return cachedNativeStats;
 }
 
 /**
@@ -443,52 +957,90 @@ export async function getLanguageServerAuth(forceRefresh = false) {
     return cachedLsAuth;
   }
 
-  // 1. Resolve Language Server Port from main.log
-  let port = 49671;
-  try {
-    const appData = process.env.APPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Roaming');
-    const mainLogPath = path.join(appData, 'Antigravity', 'logs', 'main.log');
-    if (fs.existsSync(mainLogPath)) {
-      const content = fs.readFileSync(mainLogPath, 'utf8');
-      const matches = [...content.matchAll(/Reloading all windows with URL: https:\/\/127\.0\.0\.1:(\d+)/g)];
-      if (matches.length > 0) {
-        port = parseInt(matches[matches.length - 1][1], 10);
+  // 0. Check Environment Variables first
+  let port = 0;
+  let csrf = process.env.ANTIGRAVITY_CSRF_TOKEN || '';
+  if (process.env.ANTIGRAVITY_LS_ADDRESS) {
+    const parts = process.env.ANTIGRAVITY_LS_ADDRESS.split(':');
+    if (parts.length === 2) port = parseInt(parts[1], 10);
+  }
+
+  // 1. Resolve Language Server Port from main.log across platforms
+  if (!port) {
+    const home = os.homedir();
+    const candidateLogPaths = [
+      // Windows
+      path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Antigravity', 'logs', 'main.log'),
+      // macOS
+      path.join(home, 'Library', 'Logs', 'Antigravity', 'main.log'),
+      path.join(home, 'Library', 'Application Support', 'Antigravity', 'logs', 'main.log'),
+      // Linux
+      path.join(home, '.config', 'Antigravity', 'logs', 'main.log')
+    ];
+
+    for (const mainLogPath of candidateLogPaths) {
+      if (fs.existsSync(mainLogPath)) {
+        try {
+          const content = fs.readFileSync(mainLogPath, 'utf8');
+          const matches = [...content.matchAll(/Reloading all windows with URL: https:\/\/127\.0\.0\.1:(\d+)/g)];
+          if (matches.length > 0) {
+            port = parseInt(matches[matches.length - 1][1], 10);
+            break;
+          }
+        } catch (e) {}
       }
     }
-  } catch (e) {}
+  }
+
+  if (!port) port = 49671; // Fallback default port
 
   // 2. Resolve CSRF Token via fast HTTPS GET to Language Server Web UI
-  let csrf = '';
-  try {
-    csrf = await new Promise((resolve) => {
-      const req = https.get({
-        hostname: '127.0.0.1',
-        port,
-        path: '/',
-        rejectUnauthorized: false,
-        timeout: 1000
-      }, res => {
-        let data = '';
-        res.on('data', c => data += c);
-        res.on('end', () => {
-          const m = data.match(/"csrfToken"\s*:\s*"([^"]+)"/);
-          resolve(m ? m[1] : '');
+  if (!csrf && port) {
+    try {
+      csrf = await new Promise((resolve) => {
+        const req = https.get({
+          hostname: '127.0.0.1',
+          port,
+          path: '/',
+          rejectUnauthorized: false,
+          timeout: 1200
+        }, res => {
+          let data = '';
+          res.on('data', c => data += c);
+          res.on('end', () => {
+            const m = data.match(/"csrfToken"\s*:\s*"([^"]+)"/);
+            resolve(m ? m[1] : '');
+          });
         });
+        req.on('error', () => resolve(''));
+        req.on('timeout', () => { req.destroy(); resolve(''); });
       });
-      req.on('error', () => resolve(''));
-      req.on('timeout', () => { req.destroy(); resolve(''); });
-    });
-  } catch (e) {}
+    } catch (e) {}
+  }
 
-  // 3. Fallback: query language_server process command line if HTTP GET didn't get CSRF
+  // 3. Fallback: query language_server process command line with platform awareness
   if (!csrf) {
     try {
-      const psCmd = 'Get-Process -Name language_server -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id';
-      const pid = cp.execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 3000 }).toString().trim().split(/\r?\n/)[0];
-      if (pid) {
-        const cmdLine = cp.execSync(`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId = ${pid}\\").CommandLine"`, { timeout: 3000 }).toString();
-        const m = cmdLine.match(/--csrf_token\s+([a-f0-9-]+)/i);
-        if (m) csrf = m[1];
+      if (process.platform === 'win32') {
+        const psCmd = 'Get-Process -Name language_server -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id';
+        const pid = cp.execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 3000 }).toString().trim().split(/\r?\n/)[0];
+        if (pid) {
+          const cmdLine = cp.execSync(`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId = ${pid}\\").CommandLine"`, { timeout: 3000 }).toString();
+          const m = cmdLine.match(/--csrf_token\s+([a-f0-9-]+)/i);
+          if (m) csrf = m[1];
+        }
+      } else {
+        // macOS / Linux: query ps aux directly
+        const psOutput = cp.execSync('ps aux', { timeout: 3000, encoding: 'utf8' });
+        for (const line of psOutput.split('\n')) {
+          if (line.includes('language_server') && !line.includes('grep')) {
+            const m = line.match(/--csrf_token\s+([a-f0-9-]+)/i);
+            if (m) {
+              csrf = m[1];
+              break;
+            }
+          }
+        }
       }
     } catch (e) {}
   }

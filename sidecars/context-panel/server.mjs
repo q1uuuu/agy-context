@@ -8,7 +8,9 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { analyzeTranscript, analyzeGlobalTokens, resolveTranscriptPath } from './scripts/context-analyzer.mjs';
+import os from 'node:os';
+import { analyzeTranscript, analyzeGlobalTokens, resolveTranscriptPath } from '../../scripts/context-analyzer.mjs';
+import { checkForUpdates, applyOneClickUpdate, getLocalVersion } from '../../scripts/updater.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '5173', 10);
@@ -17,7 +19,7 @@ const HOST = '127.0.0.1';
 
 // Read preload.js if available from sidecar_sdk, or use fallback
 let preloadJs = '';
-const sdkPreload = join(process.env.USERPROFILE || '', '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'preload.js');
+const sdkPreload = join(os.homedir(), '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'preload.js');
 if (existsSync(sdkPreload)) {
   preloadJs = readFileSync(sdkPreload, 'utf8');
 } else {
@@ -101,6 +103,52 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // API: Check for Updates
+  if (url.pathname === '/api/update/check') {
+    try {
+      const data = await checkForUpdates();
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // API: One-Click Apply Update
+  if (url.pathname === '/api/update/apply' && req.method === 'POST') {
+    try {
+      const result = await applyOneClickUpdate();
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // Serve Plugin Logo
+  if (url.pathname === '/logo.svg' || url.pathname === '/assets/logo.svg') {
+    try {
+      const logoPath = join(__dirname, '..', '..', 'assets', 'logo.svg');
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8' });
+      res.end(readFileSync(logoPath));
+    } catch (e) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Logo not found');
     }
     return;
   }
