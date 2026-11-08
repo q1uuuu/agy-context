@@ -1,0 +1,30 @@
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Update & Runtime Temporary Directories
+.update_tmp/
+*.tmp
+*.log
+
+# Sidecar & Database Runtime Cache
+*.db-shm
+*.db-wal
+sidecar_data/
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node & Package Manager
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
