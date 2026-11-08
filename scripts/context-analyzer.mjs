@@ -105,29 +105,112 @@ let cachedNativeStats = null;
 let lastNativeScanMs = 0;
 let isNativeScanning = false;
 
-// Google official API pricing rates ($ per 1M tokens)
-const MODEL_PRICING = {
-  'gemini-3.8-flash': { input: 0.75, output: 3.75, cached: 0.075 },
-  'gemini 3.8 flash': { input: 0.75, output: 3.75, cached: 0.075 },
-  'gemini 3.8 flash (high)': { input: 0.75, output: 3.75, cached: 0.075 },
-  'gemini-3.8-flash-tiered': { input: 0.75, output: 3.75, cached: 0.075 },
-  'gemini-3.8-flash-n': { input: 0.75, output: 3.75, cached: 0.075 },
-  'gemini-3-flash': { input: 0.75, output: 3.75, cached: 0.075 },
-  'gemini-1.5-flash': { input: 0.075, output: 0.30, cached: 0.01875 },
-  'gemini-1.5-pro': { input: 1.25, output: 5.00, cached: 0.3125 },
-  'gemini-pro': { input: 1.25, output: 5.00, cached: 0.3125 },
-  'claude-sonnet-5-5-high': { input: 3.00, output: 15.00, cached: 0.30 },
-  'claude-3-5-sonnet': { input: 3.00, output: 15.00, cached: 0.30 }
+// OpenRouter real-time API pricing rates ($ per 1M tokens)
+// Configured for active Antigravity models: Gemini 3.8 Flash, Gemini 4 Argon,
+// Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B, Claude Sonnet 5.5, Claude Opus 5.5
+export const DEFAULT_MODEL_PRICING = {
+  // 1. Gemini 3.8 Flash series (OpenRouter google/gemini-3.8-flash)
+  'gemini-3.8-flash': { input: 0.825, output: 4.125, cached: 0.0825 },
+  'gemini 3.8 flash': { input: 0.825, output: 4.125, cached: 0.0825 },
+  'gemini 3.8 flash (high)': { input: 0.825, output: 4.125, cached: 0.0825 },
+  'gemini 3.8 flash high': { input: 0.825, output: 4.125, cached: 0.0825 },
+  'gemini-3.8-flash-tiered': { input: 0.825, output: 4.125, cached: 0.0825 },
+  'gemini-3.8-flash-n': { input: 0.825, output: 4.125, cached: 0.0825 },
+
+  // 2. Gemini 4 Argon series (OpenRouter google/gemini-4-argon)
+  'gemini-4-argon': { input: 2.00, output: 10.00, cached: 0.10 },
+  'gemini 4 argon': { input: 2.00, output: 10.00, cached: 0.10 },
+
+  // 3. Claude Sonnet 4.6 series (OpenRouter anthropic/claude-sonnet-4.6)
+  'claude-sonnet-4.6': { input: 3.00, output: 15.00, cached: 0.30 },
+  'claude-sonnet-4-6': { input: 3.00, output: 15.00, cached: 0.30 },
+  'claude sonnet 4.6': { input: 3.00, output: 15.00, cached: 0.30 },
+  'claude sonnet 4.6 (thinking)': { input: 3.00, output: 15.00, cached: 0.30 },
+
+  // 4. Claude Opus 4.6 series (OpenRouter anthropic/claude-opus-4.6)
+  'claude-opus-4.6': { input: 5.00, output: 25.00, cached: 0.50 },
+  'claude-opus-4-6': { input: 5.00, output: 25.00, cached: 0.50 },
+  'claude opus 4.6': { input: 5.00, output: 25.00, cached: 0.50 },
+  'claude opus 4.6 (thinking)': { input: 5.00, output: 25.00, cached: 0.50 },
+
+  // 5. GPT-OSS 120B series (OpenRouter openai/gpt-oss-120b)
+  'gpt-oss-120b': { input: 0.028, output: 0.104, cached: 0.025 },
+  'gpt-oss 120b': { input: 0.028, output: 0.104, cached: 0.025 },
+  'gpt-oss 120b (medium)': { input: 0.028, output: 0.104, cached: 0.025 },
+  'openai/gpt-oss-120b': { input: 0.028, output: 0.104, cached: 0.025 },
+
+  // 6. Claude Sonnet 5.5 series (OpenRouter anthropic/claude-sonnet-5.5)
+  'claude-sonnet-5.5': { input: 2.00, output: 10.00, cached: 0.10 },
+  'claude-sonnet-5-5': { input: 2.00, output: 10.00, cached: 0.10 },
+  'claude sonnet 5.5': { input: 2.00, output: 10.00, cached: 0.10 },
+  'claude-sonnet-5-5-high': { input: 2.00, output: 10.00, cached: 0.10 },
+  'claude sonnet 5.5 (high)': { input: 2.00, output: 10.00, cached: 0.10 },
+
+  // 7. Claude Opus 5.5 series (OpenRouter anthropic/claude-opus-5.5)
+  'claude-opus-5.5': { input: 4.00, output: 20.00, cached: 0.20 },
+  'claude-opus-5-5': { input: 4.00, output: 20.00, cached: 0.20 },
+  'claude opus 5.5': { input: 4.00, output: 20.00, cached: 0.20 },
+  'claude-opus-5-5-high': { input: 4.00, output: 20.00, cached: 0.20 },
+  'claude opus 5.5 (high)': { input: 4.00, output: 20.00, cached: 0.20 }
 };
 
-function getModelPricing(modelName) {
+/**
+ * Loads user custom pricing config from ~/.gemini/antigravity/pricing_config.json
+ * Supports user-defined overrides while keeping official defaults as fallback.
+ * @returns {object}
+ */
+export function getMergedPricingConfig() {
+  const customConfigPath = path.join(os.homedir(), '.gemini', 'antigravity', 'pricing_config.json');
+  let customRates = {};
+  if (fs.existsSync(customConfigPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(customConfigPath, 'utf8'));
+      if (parsed && typeof parsed.rates === 'object') {
+        customRates = parsed.rates;
+      }
+    } catch (e) {}
+  }
+  return { ...DEFAULT_MODEL_PRICING, ...customRates };
+}
+
+export function getModelPricing(modelName) {
   const lower = (modelName || '').toLowerCase().trim();
-  for (const [key, p] of Object.entries(MODEL_PRICING)) {
+
+  // Explicitly ignore deprecated / discontinued models
+  if (lower.includes('1.5') || lower.includes('gemini-3-flash') || lower.includes('gemini 3 flash') || lower.includes('3.5') || lower.includes('3-5')) {
+    return null;
+  }
+
+  const pricingTable = getMergedPricingConfig();
+
+  // 1. Direct or partial match from pricing table
+  for (const [key, p] of Object.entries(pricingTable)) {
     if (lower === key || lower.includes(key)) return p;
   }
-  if (lower.includes('pro')) return { input: 1.25, output: 5.00, cached: 0.3125 };
-  if (lower.includes('flash')) return { input: 0.75, output: 3.75, cached: 0.075 };
-  if (lower.includes('sonnet') || lower.includes('claude')) return { input: 3.00, output: 15.00, cached: 0.30 };
+
+  // 2. Heuristic fallback rules for active model variants
+  if (lower.includes('opus') && (lower.includes('5.5') || lower.includes('5-5'))) {
+    return { input: 4.00, output: 20.00, cached: 0.20 };
+  }
+  if (lower.includes('sonnet') && (lower.includes('5.5') || lower.includes('5-5'))) {
+    return { input: 2.00, output: 10.00, cached: 0.10 };
+  }
+  if (lower.includes('opus') && (lower.includes('4.6') || lower.includes('4-6'))) {
+    return { input: 5.00, output: 25.00, cached: 0.50 };
+  }
+  if (lower.includes('sonnet') && (lower.includes('4.6') || lower.includes('4-6'))) {
+    return { input: 3.00, output: 15.00, cached: 0.30 };
+  }
+  if (lower.includes('gpt-oss') && lower.includes('120b')) {
+    return { input: 0.028, output: 0.104, cached: 0.025 };
+  }
+  if (lower.includes('argon')) {
+    return { input: 2.00, output: 10.00, cached: 0.10 };
+  }
+  if (lower.includes('3.8') && lower.includes('flash')) {
+    return { input: 0.825, output: 4.125, cached: 0.0825 };
+  }
+
   return null;
 }
 
@@ -507,13 +590,21 @@ export function scanNativeStatsJs() {
   // Aggregate Token Totals
   events.sort((a, b) => a.timestamp_seconds - b.timestamp_seconds);
 
-  const createTotals = () => ({ input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0, request_count: 0 });
+  const createTotals = () => ({ input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0, request_count: 0, cost: 0 });
   const addEvent = (t, e) => {
     t.input_tokens += e.input_tokens;
     t.output_tokens += e.output_tokens;
     t.cached_tokens += e.cached_tokens;
     t.total_tokens += e.total_tokens;
     t.request_count += 1;
+
+    // Precise event-level model pricing calculation
+    const pricing = getModelPricing(e.model);
+    if (pricing) {
+      t.cost += (e.input_tokens / 1e6 * pricing.input) +
+                (e.cached_tokens / 1e6 * pricing.cached) +
+                (e.output_tokens / 1e6 * pricing.output);
+    }
   };
 
   const todayTot = createTotals();
@@ -812,7 +903,7 @@ export function analyzeGlobalTokens(range = 'today') {
       const bOut = Number(b.output_tokens || 0);
       const bCch = Number(b.cached_tokens || 0);
       const bReq = Number(b.request_count || 0);
-      const cost = (bInp / 1e6 * 0.75) + (bCch / 1e6 * 0.075) + (bOut / 1e6 * 3.75);
+      const cost = Number(b.cost || 0);
 
       buckets.push({
         time: hh,
@@ -845,7 +936,7 @@ export function analyzeGlobalTokens(range = 'today') {
       const dOut = Number(d.output_tokens || 0);
       const dCch = Number(d.cached_tokens || 0);
       const dReq = Number(d.request_count || 0);
-      const cost = (dInp / 1e6 * 0.75) + (dCch / 1e6 * 0.075) + (dOut / 1e6 * 3.75);
+      const cost = Number(d.cost || 0);
 
       const shortDate = d.date.slice(5); // MM-DD
       xLabels.push(shortDate);
