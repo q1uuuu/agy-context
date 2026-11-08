@@ -1,0 +1,18 @@
+{
+  "command": "node",
+  "args": ["server.mjs"],
+  "restart_policy": "always",
+  "display_name": "Context Inspector",
+  "description": "Antigravity 上下文用量与 Token 实时监控看板（常驻右侧边栏 Auxiliary Pane）",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "Context Inspector",
+    "views": [
+      {
+        "title": "Context Usage",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "path": "/"
+      }
+    ]
+  }
+}

@@ -1,0 +1,1397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Context & Token Inspector</title>
+  <script src="/preload.js"></script>
+  <!-- Google Antigravity 2.0 Official Font System (Google Sans Flex + Google Sans Code + Inter) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:ital,wght@0,400..700;1,400..700&family=Google+Sans+Code:ital,wght@0,300..800;1,300..800&family=Google+Sans+Flex:ROND,opsz,slnt,wdth,wght@0..100,6..144,-10..0,92..100,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    :root {
+      /* Antigravity 2.0 Onyx Dark Theme */
+      --background: #0D0D11;
+      --card: #15151A;
+      --card-hover: #1D1D24;
+      --card-subtle: #111115;
+      --foreground: #EDEDF0;
+      --muted: rgba(255, 255, 255, 0.05);
+      --muted-foreground: #94949E;
+      --border: rgba(255, 255, 255, 0.075);
+      --border-subtle: rgba(255, 255, 255, 0.045);
+      --primary: #4A92E6;
+      --primary-foreground: #FFFFFF;
+      --onyx-well: #111115;
+      --onyx-key: #24252A;
+      --onyx-key-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11), 0 0 0 0.5px rgba(0, 0, 0, 0.65), 0 1px 2px rgba(0, 0, 0, 0.28), 0 3px 8px -2px rgba(0, 0, 0, 0.22);
+      --onyx-selected: #1F1F24;
+      --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 1px rgba(255, 255, 255, 0.075), 0 3px 10px -2px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.22);
+      --bar-sys: #383842;
+      --bar-tool: #585866;
+      --bar-user: #888899;
+      --bar-model: #C0C0CC;
+      --pie-unfilled: #24242C;
+      --pie-green: #4ade80;
+      --pie-warn: #fbbf24;
+      --pie-crit: #f87171;
+    }
+
+    /* Antigravity 2.0 Onyx Light Theme */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --background: #FAFAFA;
+        --card: #FFFFFF;
+        --card-hover: #F8F8FA;
+        --card-subtle: #F5F5F7;
+        --foreground: #0A0A0C;
+        --muted: rgba(10, 10, 12, 0.038);
+        --muted-foreground: #71717A;
+        --border: rgba(10, 10, 12, 0.065);
+        --border-subtle: rgba(10, 10, 12, 0.04);
+        --primary: #2F75C3;
+        --primary-foreground: #FFFFFF;
+        --onyx-well: rgba(10, 10, 12, 0.048);
+        --onyx-key: #FFFFFF;
+        --onyx-key-shadow: inset 0 1px 0 #FFFFFF, 0 0 0 0.5px rgba(10, 10, 12, 0.065), 0 1px 2px rgba(10, 10, 12, 0.05), 0 3px 6px -2px rgba(10, 10, 12, 0.04);
+        --onyx-selected: #FFFFFF;
+        --card-shadow: inset 0 1px 0 #FFFFFF, 0 0 0 1px rgba(10, 10, 12, 0.06), 0 2px 6px -1px rgba(10, 10, 12, 0.03), 0 1px 2px rgba(10, 10, 12, 0.02);
+        --bar-sys: #18181b;
+        --bar-tool: #52525b;
+        --bar-user: #71717a;
+        --bar-model: #d4d4d8;
+        --pie-unfilled: #E4E4E7;
+        --pie-green: #2d6a4f;
+        --pie-warn: #d97706;
+        --pie-crit: #dc2626;
+      }
+    }
+
+    /* Local font declarations */
+    @font-face {
+      font-family: "Google Sans Flex";
+      src: local("Google Sans Flex"), local("Google Sans"), local("GoogleSans-Regular");
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Google Sans Code";
+      src: local("Google Sans Code"), local("GoogleSansCode-Regular");
+      font-display: swap;
+    }
+
+    *, *::before, *::after {
+      font-family: inherit;
+    }
+
+    html, body, #app {
+      background-color: var(--background) !important;
+      color: var(--foreground) !important;
+      font-family: "Google Sans Flex", "Google Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+      letter-spacing: -0.012em;
+      margin: 0;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    }
+
+    /* Headings, titles, badges, and controls with optical sizing */
+    h1, h2, h3, h4, h5, h6, .font-heading, .font-semibold, .font-bold, .font-medium, .main-tab-btn, .range-btn, button {
+      font-family: "Google Sans Flex", "Google Sans", system-ui, -apple-system, sans-serif !important;
+      letter-spacing: -0.018em;
+    }
+
+    /* Monospace numbers, metrics, code, timestamps, and data rows */
+    code, pre, .font-mono, [class*="mono"], .font-numeric, table tbody td, .metric-value, .token-num, svg text {
+      font-family: "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+      font-feature-settings: "tnum" 1, "zero" 1 !important;
+      font-variant-numeric: tabular-nums lining-nums;
+      letter-spacing: -0.01em;
+    }
+
+    /* Table column headers use sans */
+    table thead th {
+      font-family: "Google Sans Flex", "Google Sans", system-ui, -apple-system, sans-serif !important;
+      letter-spacing: 0.02em;
+    }
+
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .main-tab-btn {
+      position: relative;
+      transition: color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+      font-weight: 500;
+    }
+
+    .main-tab-btn.active {
+      color: var(--foreground);
+      border-bottom: 2px solid var(--primary);
+      font-weight: 600;
+    }
+
+    .range-btn {
+      transition: all 160ms cubic-bezier(0.22, 1, 0.36, 1);
+      background-color: transparent;
+      border-color: transparent;
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+
+    .range-btn:hover {
+      color: var(--foreground);
+    }
+
+    .range-btn.active {
+      background-color: var(--onyx-key) !important;
+      color: var(--foreground) !important;
+      border-color: transparent !important;
+      font-weight: 600;
+      box-shadow: var(--onyx-key-shadow);
+    }
+
+    .hist-bar-item {
+      transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+
+    .hist-bar-item:hover,
+    .hist-bar-active {
+      opacity: 1 !important;
+      outline: 1px solid var(--foreground);
+    }
+
+    .bg-\[var\(--card\)\] {
+      box-shadow: var(--card-shadow);
+      transition: background-color 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .bg-\[var\(--card-subtle\)\] {
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    @media (prefers-color-scheme: light) {
+      .bg-\[var\(--card-subtle\)\] {
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      }
+    }
+
+    .token-bar-segment {
+      transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+  </style>
+  <script>
+    // Enforce Google Antigravity Onyx Typography across the entire frame
+    (function() {
+      const applyOnyxTypography = () => {
+        if (document.body) {
+          document.body.style.fontFamily = '"Google Sans Flex", "Google Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        }
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', applyOnyxTypography);
+      } else {
+        applyOnyxTypography();
+      }
+      if (document.fonts) {
+        document.fonts.load('14px "Google Sans Flex"').catch(() => {});
+        document.fonts.load('14px "Google Sans Code"').catch(() => {});
+        document.fonts.load('600 16px "Google Sans Flex"').catch(() => {});
+        document.fonts.load('600 16px "Google Sans Code"').catch(() => {});
+      }
+    })();
+  </script>
+</head>
+<body class="text-xs sm:text-sm antialiased">
+  <!-- Outer container with comfortable horizontal & vertical margins so island cards float with breathing room -->
+  <div id="app" class="px-4 py-3.5 sm:px-6 sm:py-5 max-w-4xl mx-auto space-y-4">
+
+    <!-- Top Navigation Header -->
+    <header class="flex items-center justify-between pb-3 border-b border-[var(--border)]">
+      <div class="flex items-center space-x-2.5">
+        <div class="w-6 h-6 rounded-md border border-[var(--border)] bg-[var(--onyx-key)] shadow-[var(--onyx-key-shadow)] flex items-center justify-center flex-shrink-0 text-[var(--foreground)]">
+          <svg class="w-3.5 h-3.5 text-[var(--foreground)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+        </div>
+        <h1 id="top-title" class="text-xs sm:text-sm font-semibold tracking-tight text-[var(--foreground)]">当前会话深度上下文</h1>
+      </div>
+
+      <div class="flex items-center space-x-2">
+        <button id="refresh-btn" onclick="refreshCurrentView()" class="px-2.5 py-1 text-xs rounded-lg border border-[var(--border)] bg-[var(--onyx-key)] hover:bg-[var(--card-hover)] text-[var(--foreground)] font-medium flex items-center gap-1.5 shadow-[var(--onyx-key-shadow)] transition select-none active:scale-95">
+          <svg id="refresh-icon" class="w-3 h-3 text-[var(--muted-foreground)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          <span class="text-[11px]">刷新</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Top View Tabs (Swapped Order: Session Context first, Global Tokens second) -->
+    <div class="flex border-b border-[var(--border)] text-xs gap-1">
+      <button onclick="switchMainView('session')" id="btn-view-session" class="main-tab-btn active px-3.5 py-2 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">
+        当前会话深度上下文 (单会话)
+      </button>
+      <button onclick="switchMainView('global')" id="btn-view-global" class="main-tab-btn px-3.5 py-2 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">
+        本地 Token 用量 (全局)
+      </button>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- VIEW 1: SINGLE CONVERSATION CONTEXT GAUGE  -->
+    <!-- ========================================== -->
+    <div id="view-session" class="space-y-4">
+
+      <!-- Context Window Overview Island Card -->
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] font-medium">当前会话窗口占用 (Context Window)</span>
+            <div class="flex items-center space-x-2 mt-0.5">
+              <span id="session-current-tokens" class="text-xl sm:text-2xl font-bold font-mono tracking-tight text-[var(--foreground)]">--</span>
+              <span class="text-xs text-[var(--muted-foreground)] font-mono">/</span>
+              <span id="session-max-tokens" class="text-xs sm:text-sm text-[var(--muted-foreground)] font-mono">--</span>
+              <div id="session-usage-pie-container" class="ml-1.5 inline-flex items-center space-x-1.5 select-none" title="当前上下文窗口占用率">
+                <div id="session-usage-pie" class="w-3.5 h-3.5 rounded-full flex-shrink-0" style="background: conic-gradient(var(--pie-green, #2d6a4f) 0% 0%, var(--pie-unfilled, #d4d4d8) 0% 100%);"></div>
+                <span id="session-usage-pct" class="text-xs sm:text-sm font-semibold font-mono" style="color: var(--pie-green, #2d6a4f);">--%</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-1.5 px-2.5 py-1 rounded border border-[var(--border)] bg-[var(--card-subtle)] text-[var(--muted-foreground)]">
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--foreground)]"></span>
+            <span id="session-health-label" class="text-xs font-medium">良好 (Healthy)</span>
+          </div>
+        </div>
+
+        <!-- Segmented Stacked Progress Bar (Native Monochrome) -->
+        <div class="w-full h-2 rounded bg-[var(--card-subtle)] overflow-hidden flex border border-[var(--border)]">
+          <div id="session-bar-sys" class="token-bar-segment" style="width: 0%; background-color: var(--bar-sys);" title="System & Rules"></div>
+          <div id="session-bar-tool" class="token-bar-segment" style="width: 0%; background-color: var(--bar-tool);" title="Tool I/O"></div>
+          <div id="session-bar-user" class="token-bar-segment" style="width: 0%; background-color: var(--bar-user);" title="User Input"></div>
+          <div id="session-bar-model" class="token-bar-segment" style="width: 0%; background-color: var(--bar-model);" title="Model History"></div>
+        </div>
+
+        <!-- Session Quick Grid (Floating Sub-cards) -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 text-xs">
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]">
+            <div class="text-[10px] text-[var(--muted-foreground)]">Prompt 缓存命中</div>
+            <div id="session-cache-ratio" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">--%</div>
+            <div id="session-cache-tokens" class="text-[10px] text-[var(--muted-foreground)] font-mono mt-0.5 truncate">0 tokens</div>
+          </div>
+
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]">
+            <div class="text-[10px] text-[var(--muted-foreground)]">单次未缓存输入</div>
+            <div id="session-uncached" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">--</div>
+            <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">实时新增计算</div>
+          </div>
+
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]">
+            <div class="text-[10px] text-[var(--muted-foreground)]">累积生成输出</div>
+            <div id="session-output" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">--</div>
+            <div id="session-turns" class="text-[10px] text-[var(--muted-foreground)] mt-0.5">-- 轮模型交互</div>
+          </div>
+
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]">
+            <div class="text-[10px] text-[var(--muted-foreground)]">剩余可用空间</div>
+            <div id="session-remaining" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">--</div>
+            <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">至模型上限</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Secondary Session Sub-Tabs -->
+      <div class="flex border-b border-[var(--border)] text-xs gap-1">
+        <button onclick="switchSessionSubTab('breakdown')" id="subtab-btn-breakdown" class="main-tab-btn active px-3 py-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">构成明细</button>
+        <button onclick="switchSessionSubTab('consumers')" id="subtab-btn-consumers" class="main-tab-btn px-3 py-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">消耗排行</button>
+        <button onclick="switchSessionSubTab('timeline')" id="subtab-btn-timeline" class="main-tab-btn px-3 py-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">演进轨迹</button>
+        <button onclick="switchSessionSubTab('advice')" id="subtab-btn-advice" class="main-tab-btn px-3 py-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition">诊断建议</button>
+      </div>
+
+      <!-- Session Breakdown SubTab -->
+      <div id="subtab-breakdown" class="space-y-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div id="session-breakdown-list" class="space-y-2"></div>
+          <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-2.5">
+            <div class="flex items-center justify-between text-xs pb-1.5 border-b border-[var(--border)]">
+              <span class="font-medium text-[var(--foreground)]">工具调用分布 (Tool Invocations)</span>
+              <span id="session-total-tool-count" class="text-[11px] text-[var(--muted-foreground)] font-mono">-- 次</span>
+            </div>
+            <div id="session-tool-stats-list" class="space-y-1.5 max-h-56 overflow-y-auto pr-1"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Session Consumers SubTab -->
+      <div id="subtab-consumers" class="hidden space-y-2">
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-2.5">
+          <div class="flex items-center justify-between pb-1.5 border-b border-[var(--border)]">
+            <span class="text-xs font-medium text-[var(--foreground)]">单项消耗排行 Top 10 (Heavyweight Eaters)</span>
+            <span class="text-[11px] text-[var(--muted-foreground)] font-mono">按体积排序</span>
+          </div>
+          <div id="session-top-consumers-list" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <!-- Session Timeline SubTab -->
+      <div id="subtab-timeline" class="hidden space-y-3">
+        <!-- Top Stats Summary Island (4 KPI Cards) -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5">
+            <div class="text-[10px] text-[var(--muted-foreground)]">初始上下文 (T1)</div>
+            <div id="tl-stat-init" class="text-sm font-bold font-mono text-[var(--foreground)]">--</div>
+            <div class="text-[9px] text-[var(--muted-foreground)]">首轮会话体积</div>
+          </div>
+          <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5">
+            <div class="text-[10px] text-[var(--muted-foreground)]">当前上下文 (最新)</div>
+            <div id="tl-stat-curr" class="text-sm font-bold font-mono text-[var(--foreground)]">--</div>
+            <div id="tl-stat-curr-sub" class="text-[9px] text-[var(--muted-foreground)]">第 -- 轮</div>
+          </div>
+          <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5">
+            <div class="text-[10px] text-[var(--muted-foreground)]">历史峰值上下文</div>
+            <div id="tl-stat-peak" class="text-sm font-bold font-mono text-[var(--foreground)]">--</div>
+            <div id="tl-stat-peak-sub" class="text-[9px] text-[var(--muted-foreground)]">出现在第 -- 轮</div>
+          </div>
+          <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5">
+            <div class="text-[10px] text-[var(--muted-foreground)]">平均每轮增速</div>
+            <div id="tl-stat-rate" class="text-sm font-bold font-mono text-[var(--foreground)]">--</div>
+            <div class="text-[9px] text-[var(--muted-foreground)]">净增 / 交互轮次</div>
+          </div>
+        </div>
+
+        <!-- Main Chart Island Card -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3.5 sm:p-4 shadow-sm space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-1.5 pb-2 border-b border-[var(--border)]">
+            <div class="flex items-center space-x-2">
+              <span class="text-xs font-semibold text-[var(--foreground)]">上下文轮次增长曲线 (Token Velocity)</span>
+              <span id="tl-turns-badge" class="px-1.5 py-0.5 rounded text-[10px] font-mono border border-[var(--border)] bg-[var(--card-subtle)] text-[var(--muted-foreground)]">0 轮数据</span>
+            </div>
+            <div class="flex items-center space-x-3 text-[11px] text-[var(--muted-foreground)] font-mono">
+              <span class="flex items-center gap-1">
+                <span class="w-2.5 h-0.5 bg-[var(--foreground)] inline-block"></span> 上下文总量
+              </span>
+              <span class="flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-[#16a34a] inline-block"></span> 峰值 / 最新
+              </span>
+            </div>
+          </div>
+
+          <!-- Interactive Chart Stage -->
+          <div class="relative w-full h-56 bg-[var(--card-subtle)] rounded-lg p-1 border border-[var(--border)] select-none">
+            <svg id="session-evolution-chart" class="w-full h-full" viewBox="0 0 540 180" preserveAspectRatio="none">
+              <!-- Dynamically generated coordinate grid, axes, labels, curves, milestone badges -->
+            </svg>
+
+            <!-- Floating Tooltip Box (snaps to mouse cursor) -->
+            <div id="tl-chart-tooltip" class="absolute hidden pointer-events-none z-20 bg-[var(--card)] border border-[var(--border)] rounded-lg p-2.5 shadow-lg text-xs space-y-1 transition-opacity duration-150 backdrop-blur-sm" style="min-width: 170px;">
+              <div class="flex items-center justify-between font-mono pb-1 border-b border-[var(--border)]">
+                <span id="tt-turn" class="font-bold text-[var(--foreground)]">第 -- 轮</span>
+                <span id="tt-step" class="text-[10px] text-[var(--muted-foreground)]">Step --</span>
+              </div>
+              <div class="flex justify-between items-center text-[11px]">
+                <span class="text-[var(--muted-foreground)]">上下文总量:</span>
+                <span id="tt-total" class="font-mono font-semibold text-[var(--foreground)]">--</span>
+              </div>
+              <div class="flex justify-between items-center text-[11px]">
+                <span class="text-[var(--muted-foreground)]">Prompt 缓存:</span>
+                <span id="tt-cache" class="font-mono text-[var(--muted-foreground)]">--</span>
+              </div>
+              <div class="flex justify-between items-center text-[11px]">
+                <span class="text-[var(--muted-foreground)]">单轮未缓存:</span>
+                <span id="tt-input" class="font-mono text-[var(--muted-foreground)]">--</span>
+              </div>
+              <div class="flex justify-between items-center text-[11px]">
+                <span class="text-[var(--muted-foreground)]">模型生成输出:</span>
+                <span id="tt-output" class="font-mono text-[var(--muted-foreground)]">--</span>
+              </div>
+              <div id="tt-delta-row" class="flex justify-between items-center text-[10px] pt-0.5 border-t border-[var(--border-subtle)] text-[var(--muted-foreground)]">
+                <span>较上轮变化:</span>
+                <span id="tt-delta" class="font-mono font-medium">--</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between text-[11px] text-[var(--muted-foreground)] px-1 gap-2">
+            <span>💡 提示：在曲线上移动鼠标可查看每轮详细 Token 构成与增量</span>
+            <span class="font-mono">纵轴：Tokens (单位 K/M) | 横轴：交互轮次</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Session Advice SubTab -->
+      <div id="subtab-advice" class="hidden space-y-2.5">
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-2.5">
+          <div class="text-xs font-medium text-[var(--foreground)]">健康评估与优化建议</div>
+          <div id="session-advice-list" class="space-y-2"></div>
+          <div class="pt-2 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span class="text-[11px] text-[var(--muted-foreground)]">如需释放空间，可在聊天窗口中输入：</span>
+            <code class="px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--card-subtle)] text-[var(--foreground)] font-mono text-xs">/compact</code>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+
+    <!-- ========================================== -->
+    <!-- VIEW 2: GLOBAL METRICS & USAGE (Native AGY Style) -->
+    <!-- ========================================== -->
+    <div id="view-global" class="hidden space-y-4">
+      
+      <!-- Range Filter Selector Bar (Island Style) -->
+      <div class="flex flex-wrap items-center justify-between gap-2 bg-[var(--card)] border border-[var(--border)] rounded-xl px-3.5 py-2.5 shadow-sm">
+        <div class="flex items-center space-x-1.5 text-xs">
+          <span class="text-[11px] text-[var(--muted-foreground)] mr-1">统计范围</span>
+          <div class="inline-flex items-center space-x-1 bg-[var(--onyx-well)] p-1 rounded-lg border border-[var(--border-subtle)]">
+            <button onclick="setRange('today')" id="range-today" class="range-btn active px-2.5 py-0.5 rounded-md text-[11px] transition">今天</button>
+            <button onclick="setRange('yesterday')" id="range-yesterday" class="range-btn px-2.5 py-0.5 rounded-md text-[11px] transition">昨天</button>
+            <button onclick="setRange('3d')" id="range-3d" class="range-btn px-2.5 py-0.5 rounded-md text-[11px] transition">近 3 天</button>
+            <button onclick="setRange('7d')" id="range-7d" class="range-btn px-2.5 py-0.5 rounded-md text-[11px] transition">近 7 天</button>
+            <button onclick="setRange('30d')" id="range-30d" class="range-btn px-2.5 py-0.5 rounded-md text-[11px] transition">近 30 天</button>
+          </div>
+        </div>
+        <div id="range-summary-pill" class="text-[10px] text-[var(--muted-foreground)] font-mono">今天本地记录汇总</div>
+      </div>
+
+      <!-- 8-Card Metric Grid (Clean monochrome, no emojis) -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        <!-- 1. Total Token -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div id="lbl-total-tokens" class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">今天总 Token</div>
+          <div id="val-total-compact" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">--</div>
+          <div id="val-total-full" class="text-[10px] text-[var(--muted-foreground)] font-mono truncate">-- Token</div>
+        </div>
+
+        <!-- 2. Input Token -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">输入 Token</div>
+          <div id="val-input-compact" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">--</div>
+          <div id="val-input-full" class="text-[10px] text-[var(--muted-foreground)] font-mono truncate">-- Token</div>
+        </div>
+
+        <!-- 3. Output Token -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">输出 Token</div>
+          <div id="val-output-compact" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">--</div>
+          <div id="val-output-full" class="text-[10px] text-[var(--muted-foreground)] font-mono truncate">-- Token</div>
+        </div>
+
+        <!-- 4. Cache Hit Ratio -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">缓存命中率</div>
+          <div id="val-cache-ratio" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">--%</div>
+          <div class="text-[10px] text-[var(--muted-foreground)]">输入缓存占比</div>
+        </div>
+
+        <!-- 5. API Cost Estimate -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">API 费用估算</div>
+          <div id="val-cost" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">$--</div>
+          <div id="val-requests" class="text-[10px] text-[var(--muted-foreground)]">-- 次请求</div>
+        </div>
+
+        <!-- 6. TTFT -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">首字延迟</div>
+          <div id="val-ttft" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">-- 秒</div>
+          <div class="text-[10px] text-[var(--muted-foreground)]">最近 10 次回复的中位数</div>
+        </div>
+
+        <!-- 7. Speed -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">正文速度</div>
+          <div id="val-speed" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">-- token/s</div>
+          <div class="text-[10px] text-[var(--muted-foreground)]">最近 10 次回复的中位数</div>
+        </div>
+
+        <!-- 8. Avg Input Size -->
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-sm space-y-0.5">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">平均输入规模</div>
+          <div id="val-avg-input" class="text-lg sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5">-- Token</div>
+          <div id="val-avg-sub" class="text-[10px] text-[var(--muted-foreground)]">-- 次请求，含缓存输入</div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- SECTION A: 本地生成记录汇总 (Island Card) -->
+      <!-- ========================================== -->
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3.5">
+        <div class="flex flex-wrap items-start justify-between gap-3 pb-2.5 border-b border-[var(--border)]">
+          <!-- Left title & icon -->
+          <div class="flex items-center space-x-2">
+            <span class="w-5 h-5 rounded border border-[var(--border)] bg-[var(--card-subtle)] flex items-center justify-center text-[var(--foreground)]">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13l4-4 4 4 6-8 4 4" />
+              </svg>
+            </span>
+            <div>
+              <div id="chart-range-title" class="text-xs sm:text-sm font-bold text-[var(--foreground)]">今天</div>
+              <div class="text-[10px] text-[var(--muted-foreground)]">本地生成记录汇总</div>
+            </div>
+          </div>
+
+          <!-- Right interactive stats card (Monochrome styling) -->
+          <div class="text-right font-mono text-[11px] space-y-0.5 bg-[var(--card-subtle)] px-2.5 py-1.5 rounded-lg border border-[var(--border)]">
+            <div class="flex items-center justify-end space-x-2">
+              <span id="chart-bucket-time" class="font-bold text-[var(--foreground)]">--:--</span>
+              <span id="chart-bucket-total" class="font-bold text-[var(--foreground)] text-xs">-- Token</span>
+            </div>
+            <div class="text-[10px] text-[var(--muted-foreground)] flex items-center justify-end space-x-3">
+              <span>输入 <strong id="chart-bucket-input" class="text-[var(--foreground)]">--</strong></span>
+              <span>输出 <strong id="chart-bucket-output" class="text-[var(--foreground)]">--</strong></span>
+            </div>
+            <div class="text-[10px] text-[var(--muted-foreground)] flex items-center justify-end space-x-3">
+              <span>缓存 <strong id="chart-bucket-cache" class="text-[var(--foreground)]">--</strong></span>
+              <span>请求 <strong id="chart-bucket-req" class="text-[var(--foreground)]">--</strong></span>
+            </div>
+            <div class="text-[10px] text-[var(--muted-foreground)]">
+              预估费用 <strong id="chart-bucket-cost" class="text-[var(--foreground)] font-medium">$--</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bar chart visualizer -->
+        <div class="relative w-full pt-1 px-1">
+          <div id="histogram-bars-container" class="h-28 flex items-end justify-between border-b border-[var(--border)] gap-1">
+            <!-- Populated dynamically -->
+          </div>
+          <div id="histogram-x-axis" class="flex justify-between text-[9px] sm:text-[10px] text-[var(--muted-foreground)] font-mono pt-1.5 px-0.5">
+            <!-- Dynamic X-axis scale ticks -->
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- SECTION B: 模型分布 (Island Card) -->
+      <!-- ========================================== -->
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3.5">
+        <div class="flex items-center justify-between pb-2.5 border-b border-[var(--border)]">
+          <div class="flex items-center space-x-2">
+            <span class="w-5 h-5 rounded border border-[var(--border)] bg-[var(--card-subtle)] flex items-center justify-center text-[var(--foreground)]">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M12 3v9h9"/>
+              </svg>
+            </span>
+            <div>
+              <div class="text-xs sm:text-sm font-bold text-[var(--foreground)]">模型分布</div>
+              <div id="model-view-subtitle" class="text-[10px] text-[var(--muted-foreground)]">今天本地记录</div>
+            </div>
+          </div>
+
+          <!-- Switch Pills: Token 用量 vs 预估费用 -->
+          <div class="flex items-center space-x-1 bg-[var(--onyx-well)] p-1 rounded-lg border border-[var(--border-subtle)] text-[11px]">
+            <button id="btn-model-tokens" onclick="switchModelDistributionTab('tokens')" class="px-2.5 py-0.5 rounded-md font-medium bg-[var(--onyx-key)] text-[var(--foreground)] shadow-[var(--onyx-key-shadow)] transition">
+              Token 用量
+            </button>
+            <button id="btn-model-cost" onclick="switchModelDistributionTab('cost')" class="px-2.5 py-0.5 rounded-md font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition flex items-center gap-1">
+              <svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M12 3v9h9"/>
+              </svg>
+              <span>预估费用</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 1: Token Usage View (Monochromatic clean progress bars) -->
+        <div id="tab-model-tokens" class="space-y-3 pt-1">
+          <!-- Populated dynamically -->
+        </div>
+
+        <!-- Tab 2: Cost View (Monochromatic SVG Donut Chart + Legend) -->
+        <div id="tab-model-cost" class="hidden pt-1">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+            <!-- Left Donut Chart -->
+            <div class="flex justify-center py-2">
+              <div class="relative w-32 h-32 flex items-center justify-center">
+                <svg id="cost-donut-svg" class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <!-- Injected dynamically -->
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
+                  <span id="donut-center-cost" class="text-base sm:text-lg font-bold font-mono text-[var(--foreground)]">$--</span>
+                  <span id="donut-center-sub" class="text-[10px] text-[var(--muted-foreground)]">部分估算</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Cost Breakdown Legend -->
+            <div id="cost-legend-list" class="space-y-2 text-xs font-mono">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail Table: 模型明细 (Island Card) -->
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3">
+        <div class="flex items-center justify-between pb-1.5 border-b border-[var(--border)]">
+          <span class="text-xs font-semibold text-[var(--foreground)]">模型明细</span>
+          <span id="model-count-label" class="text-[10px] text-[var(--muted-foreground)] font-mono">-- 个模型</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs font-mono">
+            <thead>
+              <tr class="text-[10px] uppercase text-[var(--muted-foreground)] border-b border-[var(--border)]">
+                <th class="pb-1.5 font-medium">模型</th>
+                <th class="pb-1.5 font-medium">预估费用</th>
+                <th class="pb-1.5 font-medium">总 Token</th>
+                <th class="pb-1.5 font-medium">输入</th>
+                <th class="pb-1.5 font-medium">输出</th>
+                <th class="pb-1.5 font-medium">请求</th>
+              </tr>
+            </thead>
+            <tbody id="model-table-body" class="divide-y divide-[var(--border-subtle)]">
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    let currentMainView = 'session';
+    let currentRange = 'today';
+    let currentModelTab = 'tokens';
+    let globalDataCache = null;
+    let sessionDataCache = null;
+
+    function switchMainView(view) {
+      currentMainView = view;
+      document.getElementById('view-session').classList.toggle('hidden', view !== 'session');
+      document.getElementById('view-global').classList.toggle('hidden', view !== 'global');
+      document.getElementById('btn-view-session').classList.toggle('active', view === 'session');
+      document.getElementById('btn-view-global').classList.toggle('active', view === 'global');
+      
+      const topTitle = document.getElementById('top-title');
+      if (view === 'session') {
+        if (topTitle) topTitle.textContent = '当前会话深度上下文';
+        fetchSessionContext();
+      } else {
+        if (topTitle) topTitle.textContent = '本地 Token 用量 (全局)';
+        fetchGlobalTokens();
+      }
+    }
+
+    function switchSessionSubTab(tab) {
+      const tabs = ['breakdown', 'consumers', 'timeline', 'advice'];
+      tabs.forEach(t => {
+        document.getElementById(`subtab-${t}`).classList.add('hidden');
+        document.getElementById(`subtab-btn-${t}`).classList.remove('active');
+      });
+      document.getElementById(`subtab-${tab}`).classList.remove('hidden');
+      document.getElementById(`subtab-btn-${tab}`).classList.add('active');
+      if (tab === 'timeline' && sessionDataCache && sessionDataCache.timeline) {
+        renderSessionTimelineChart(sessionDataCache.timeline);
+      }
+    }
+
+    function setRange(range) {
+      currentRange = range;
+      ['today', 'yesterday', '3d', '7d', '30d'].forEach(r => {
+        const btn = document.getElementById(`range-${r}`);
+        if (btn) btn.classList.toggle('active', r === range);
+      });
+      fetchGlobalTokens();
+    }
+
+    function switchModelDistributionTab(tab) {
+      currentModelTab = tab;
+      const btnTokens = document.getElementById('btn-model-tokens');
+      const btnCost = document.getElementById('btn-model-cost');
+      const tabTokens = document.getElementById('tab-model-tokens');
+      const tabCost = document.getElementById('tab-model-cost');
+      const subTitle = document.getElementById('model-view-subtitle');
+
+      if (tab === 'tokens') {
+        btnTokens.className = 'px-2.5 py-0.5 rounded-md font-medium bg-[var(--onyx-key)] text-[var(--foreground)] shadow-[var(--onyx-key-shadow)] transition';
+        btnCost.className = 'px-2.5 py-0.5 rounded-md font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition flex items-center gap-1';
+        tabTokens.classList.remove('hidden');
+        tabCost.classList.add('hidden');
+        if (globalDataCache) {
+          subTitle.textContent = `${globalDataCache.rangeLabel}本地记录`;
+        }
+      } else {
+        btnCost.className = 'px-2.5 py-0.5 rounded-md font-medium bg-[var(--onyx-key)] text-[var(--foreground)] shadow-[var(--onyx-key-shadow)] transition flex items-center gap-1';
+        btnTokens.className = 'px-2.5 py-0.5 rounded-md font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition';
+        tabTokens.classList.add('hidden');
+        tabCost.classList.remove('hidden');
+        if (globalDataCache) {
+          if (globalDataCache.unpricedCount > 0) {
+            subTitle.textContent = `${globalDataCache.unpricedCount} 个模型未计价，未计入费用估算`;
+          } else {
+            subTitle.textContent = '全模型已计费';
+          }
+        }
+      }
+    }
+
+    function refreshCurrentView() {
+      if (currentMainView === 'session') {
+        fetchSessionContext();
+      } else {
+        fetchGlobalTokens();
+      }
+    }
+
+    // ==========================================
+    // Fetch Global Metrics (Native Antigravity style)
+    // ==========================================
+    async function fetchGlobalTokens() {
+      const icon = document.getElementById('refresh-icon');
+      if (icon) icon.classList.add('animate-spin');
+
+      try {
+        const fetchFn = (window.sidecar && window.sidecar.fetch) ? window.sidecar.fetch : fetch;
+        const res = await fetchFn(`/api/global-tokens?range=${encodeURIComponent(currentRange)}`);
+        if (!res.ok) throw new Error('API ' + res.status);
+        const data = await res.json();
+        globalDataCache = data;
+        renderGlobalView(data);
+      } catch (err) {
+        console.error('Failed to fetch global tokens:', err);
+      } finally {
+        if (icon) setTimeout(() => icon.classList.remove('animate-spin'), 300);
+      }
+    }
+
+    function renderGlobalView(data) {
+      const scanEl = document.getElementById('scan-status');
+      if (scanEl && currentMainView === 'global') {
+        scanEl.textContent = `已扫描 ${data.scanTime} · 最新记录 ${data.latestRecordTime}`;
+      }
+      document.getElementById('lbl-total-tokens').textContent = `${data.rangeLabel}总 Token`;
+      document.getElementById('range-summary-pill').textContent = `${data.rangeLabel}本地记录汇总`;
+      document.getElementById('chart-range-title').textContent = data.rangeLabel;
+
+      document.getElementById('val-total-compact').textContent = data.totalTokens.compact;
+      document.getElementById('val-total-full').textContent = data.totalTokens.full;
+
+      document.getElementById('val-input-compact').textContent = data.inputTokens.compact;
+      document.getElementById('val-input-full').textContent = data.inputTokens.full;
+
+      document.getElementById('val-output-compact').textContent = data.outputTokens.compact;
+      document.getElementById('val-output-full').textContent = data.outputTokens.full;
+
+      document.getElementById('val-cache-ratio').textContent = data.cacheHitRatio.percent;
+      document.getElementById('val-cost').textContent = data.costEstimate.formatted;
+      document.getElementById('val-requests').textContent = data.costEstimate.requests;
+
+      document.getElementById('val-ttft').textContent = data.ttft.value;
+      document.getElementById('val-speed').textContent = data.speed.value;
+
+      document.getElementById('val-avg-input').textContent = data.avgInput.formatted;
+      document.getElementById('val-avg-sub').textContent = data.avgInput.sub;
+
+      renderHistogram(data.chart);
+      renderModelViews(data);
+    }
+
+    // ==========================================
+    // Render Histogram Bar Chart (Monochrome Antigravity Style)
+    // ==========================================
+    function renderHistogram(chartData) {
+      if (!chartData || !chartData.buckets || chartData.buckets.length === 0) return;
+
+      const container = document.getElementById('histogram-bars-container');
+      const xAxis = document.getElementById('histogram-x-axis');
+      container.innerHTML = '';
+      xAxis.innerHTML = '';
+
+      const buckets = chartData.buckets;
+      const maxVal = Math.max(...buckets.map(b => b.rawTotal), 1);
+
+      buckets.forEach((b, idx) => {
+        const slot = document.createElement('div');
+        slot.className = 'flex-1 h-full flex flex-col justify-end items-center cursor-pointer group py-1 relative';
+
+        const heightPct = b.rawTotal > 0 ? Math.max(5, (b.rawTotal / maxVal) * 100) : 0;
+
+        const bar = document.createElement('div');
+        
+        if (b.rawTotal > 0) {
+          bar.className = 'w-2 sm:w-2.5 rounded-t hist-bar-item bg-[var(--foreground)] opacity-70';
+          bar.style.height = `${heightPct}%`;
+        } else {
+          bar.className = 'w-1.5 rounded-t bg-[var(--border)] opacity-35';
+          bar.style.height = '2px';
+        }
+
+        slot.appendChild(bar);
+
+        const selectBucket = () => {
+          document.querySelectorAll('#histogram-bars-container .hist-bar-active').forEach(el => el.classList.remove('hist-bar-active'));
+          bar.classList.add('hist-bar-active');
+          updateBucketCard(b);
+        };
+
+        slot.addEventListener('mouseenter', selectBucket);
+        slot.addEventListener('click', selectBucket);
+
+        container.appendChild(slot);
+      });
+
+      const defaultIndex = chartData.defaultActiveIndex ?? 0;
+      const defaultBucket = buckets[defaultIndex] || buckets[0];
+      updateBucketCard(defaultBucket);
+      const activeBar = container.children[defaultIndex]?.querySelector('div');
+      if (activeBar) activeBar.classList.add('hist-bar-active');
+
+      if (chartData.type === 'hourly') {
+        const ticks = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', '23:00'];
+        xAxis.innerHTML = ticks.map(t => `<span>${t}</span>`).join('');
+      } else {
+        xAxis.innerHTML = chartData.xLabels.map(l => `<span>${l}</span>`).join('');
+      }
+    }
+
+    function updateBucketCard(b) {
+      if (!b) return;
+      document.getElementById('chart-bucket-time').textContent = b.time;
+      document.getElementById('chart-bucket-total').textContent = b.fullTotal;
+      document.getElementById('chart-bucket-input').textContent = b.inputCompact;
+      document.getElementById('chart-bucket-output').textContent = b.outputCompact;
+      document.getElementById('chart-bucket-cache').textContent = b.cacheCompact;
+      document.getElementById('chart-bucket-req').textContent = `${b.requests} 次`;
+      document.getElementById('chart-bucket-cost').textContent = b.cost;
+    }
+
+    // ==========================================
+    // Render Model Views (Monochrome Antigravity Style)
+    // ==========================================
+    function renderModelViews(data) {
+      const models = data.models || [];
+      const subTitle = document.getElementById('model-view-subtitle');
+      if (currentModelTab === 'tokens') {
+        subTitle.textContent = `${data.rangeLabel}本地记录`;
+      } else {
+        if (data.unpricedCount > 0) {
+          subTitle.textContent = `${data.unpricedCount} 个模型未计价，未计入费用估算`;
+        } else {
+          subTitle.textContent = '全模型已计费';
+        }
+      }
+
+      // Tab 1: Token Usage horizontal progress bars (Proportional to total token volume)
+      const tabTokens = document.getElementById('tab-model-tokens');
+      const totalAllTokens = models.reduce((sum, m) => sum + m.rawTotal, 0);
+      
+      if (models.length === 0) {
+        tabTokens.innerHTML = '<div class="text-[11px] text-[var(--muted-foreground)]">当前范围内无模型记录</div>';
+      } else {
+        tabTokens.innerHTML = models.map(m => {
+          // Each model's bar width is its share of total tokens across all models combined
+          const pct = totalAllTokens > 0 ? ((m.rawTotal / totalAllTokens) * 100) : 0;
+          return `
+            <div class="space-y-1">
+              <div class="flex items-center justify-between text-xs font-mono">
+                <span class="text-[var(--foreground)] font-medium truncate">${escapeHtml(m.model)}</span>
+                <span class="text-[var(--foreground)] font-bold ml-2">${m.compactTotal}</span>
+              </div>
+              <div class="w-full h-1.5 rounded-full bg-[var(--card-subtle)] border border-[var(--border)] overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-300 bg-[var(--foreground)] opacity-75" style="width: ${pct.toFixed(1)}%;"></div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Tab 2: Cost Donut Chart & Legend (Monochrome Antigravity Shades)
+      const pricedModels = models.filter(m => m.isPriced);
+      const totalPricedCost = pricedModels.reduce((acc, m) => acc + m.rawCost, 0);
+
+      document.getElementById('donut-center-cost').textContent = data.costEstimate.formatted;
+      document.getElementById('donut-center-sub').textContent = data.unpricedCount > 0 ? '部分估算' : '预估总计';
+
+      const donutSvg = document.getElementById('cost-donut-svg');
+      const legendList = document.getElementById('cost-legend-list');
+
+      // Monochromatic slate/zinc palette matching Antigravity tokens
+      const palette = ['var(--bar-sys)', 'var(--bar-tool)', 'var(--bar-user)', 'var(--bar-model)'];
+
+      if (pricedModels.length === 0 || totalPricedCost === 0) {
+        donutSvg.innerHTML = `
+          <circle cx="50" cy="50" r="38" stroke="var(--border)" stroke-width="12" fill="none" />
+        `;
+        legendList.innerHTML = '<div class="text-[11px] text-[var(--muted-foreground)]">暂无计费模型数据</div>';
+      } else {
+        const circumference = 2 * Math.PI * 38; // ~238.76
+        let offset = 0;
+        let svgCircles = `
+          <circle cx="50" cy="50" r="38" stroke="var(--border-subtle)" stroke-width="12" fill="none" />
+        `;
+
+        pricedModels.forEach((m, idx) => {
+          const sliceRatio = m.rawCost / totalPricedCost;
+          const dash = sliceRatio * circumference;
+          const color = palette[idx % palette.length];
+
+          svgCircles += `
+            <circle cx="50" cy="50" r="38" stroke="${color}" stroke-width="12" fill="none"
+              stroke-dasharray="${dash} ${circumference}"
+              stroke-dashoffset="-${offset}"
+              class="transition-all duration-300"
+            />
+          `;
+          offset += dash;
+        });
+
+        donutSvg.innerHTML = svgCircles;
+
+        // Legend
+        legendList.innerHTML = pricedModels.map((m, idx) => {
+          const color = palette[idx % palette.length];
+          return `
+            <div class="flex items-center justify-between py-1 text-xs font-mono border-b border-[var(--border-subtle)] last:border-0">
+              <div class="flex items-center space-x-2 truncate mr-2">
+                <span class="w-2.5 h-2.5 rounded-sm flex-shrink-0" style="background-color: ${color};"></span>
+                <span class="font-medium text-[var(--foreground)] truncate">${escapeHtml(m.model)}</span>
+              </div>
+              <span class="text-[var(--foreground)] font-medium flex-shrink-0">${m.cost} (${m.percent})</span>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Models Detail Table
+      document.getElementById('model-count-label').textContent = `${data.modelCount} 个模型`;
+      const tbody = document.getElementById('model-table-body');
+      if (models.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="py-2 text-[var(--muted-foreground)]">无模型数据</td></tr>';
+      } else {
+        tbody.innerHTML = models.map(m => `
+          <tr class="hover:bg-[var(--card-hover)] transition">
+            <td class="py-1.5 font-medium text-[var(--foreground)]">${escapeHtml(m.model)}</td>
+            <td class="py-1.5 text-[var(--foreground)]">${m.cost}</td>
+            <td class="py-1.5 text-[var(--foreground)]">${m.total}</td>
+            <td class="py-1.5 text-[var(--muted-foreground)]">${m.input}</td>
+            <td class="py-1.5 text-[var(--muted-foreground)]">${m.output}</td>
+            <td class="py-1.5 text-[var(--muted-foreground)]">${m.requests}</td>
+          </tr>
+        `).join('');
+      }
+    }
+
+    // ==========================================
+    // Fetch Single Conversation Context Metrics
+    // ==========================================
+    async function fetchSessionContext() {
+      const icon = document.getElementById('refresh-icon');
+      if (icon) icon.classList.add('animate-spin');
+
+      try {
+        let convId = '';
+        if (window.sidecar && window.sidecar.conversationId) {
+          convId = window.sidecar.conversationId;
+        } else {
+          const params = new URLSearchParams(window.location.search);
+          convId = params.get('conversationId') || '';
+        }
+
+        const fetchFn = (window.sidecar && window.sidecar.fetch) ? window.sidecar.fetch : fetch;
+        const res = await fetchFn(`/api/context?conversationId=${encodeURIComponent(convId)}`);
+        if (!res.ok) throw new Error('API ' + res.status);
+        const data = await res.json();
+        sessionDataCache = data;
+        renderSessionView(data);
+      } catch (err) {
+        console.error('Failed to fetch session context:', err);
+      } finally {
+        if (icon) setTimeout(() => icon.classList.remove('animate-spin'), 300);
+      }
+    }
+
+    function renderSessionView(data) {
+      const ov = data.overview;
+      const meta = data.meta;
+
+      document.getElementById('session-current-tokens').textContent = ov.currentTotalContext.toLocaleString();
+      document.getElementById('session-max-tokens').textContent = meta.modelLimit.toLocaleString();
+      
+      const pctVal = Math.min(100, Math.max(0, ov.usagePercent || 0));
+      const displayPct = `${Math.round(pctVal)}%`;
+      const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      let sliceColor = isDark ? '#4ade80' : '#2d6a4f';
+      if (pctVal > 80) sliceColor = isDark ? '#f87171' : '#dc2626';
+      else if (pctVal > 60) sliceColor = isDark ? '#fbbf24' : '#d97706';
+      const unfilledColor = isDark ? '#3f3f46' : '#d4d4d8';
+
+      const pieEl = document.getElementById('session-usage-pie');
+      const pctEl = document.getElementById('session-usage-pct');
+      if (pieEl) {
+        pieEl.style.background = `conic-gradient(${sliceColor} 0% ${pctVal}%, ${unfilledColor} ${pctVal}% 100%)`;
+      }
+      if (pctEl) {
+        pctEl.textContent = displayPct;
+        pctEl.style.color = sliceColor;
+      }
+
+      document.getElementById('session-health-label').textContent = ov.healthStatus;
+
+      document.getElementById('session-cache-ratio').textContent = `${ov.cacheHitRatio}%`;
+      document.getElementById('session-cache-tokens').textContent = `${ov.cacheTokens.toLocaleString()} tokens`;
+      document.getElementById('session-uncached').textContent = ov.uncachedTokens.toLocaleString();
+      document.getElementById('session-output').textContent = ov.totalOutputTokens.toLocaleString();
+      document.getElementById('session-turns').textContent = `${ov.totalModelTurns} 轮模型交互`;
+      document.getElementById('session-remaining').textContent = ov.remainingTokens.toLocaleString();
+
+      const barSys = document.getElementById('session-bar-sys');
+      const barTool = document.getElementById('session-bar-tool');
+      const barUser = document.getElementById('session-bar-user');
+      const barModel = document.getElementById('session-bar-model');
+
+      if (data.breakdown && data.breakdown.length === 3) {
+        // Official 3D Groups: System Prompt, Tools, Chat Messages
+        const sysPct = data.breakdown[0]?.percent || 0;
+        const toolPct = data.breakdown[1]?.percent || 0;
+        const chatPct = data.breakdown[2]?.percent || 0;
+        if (barSys) { barSys.style.width = `${sysPct}%`; barSys.style.display = 'block'; barSys.title = `${data.breakdown[0].label}: ${sysPct}%`; }
+        if (barTool) { barTool.style.width = `${toolPct}%`; barTool.style.display = 'block'; barTool.title = `${data.breakdown[1].label}: ${toolPct}%`; }
+        if (barUser) { barUser.style.width = '0%'; barUser.style.display = 'none'; }
+        if (barModel) { barModel.style.width = `${chatPct}%`; barModel.style.display = 'block'; barModel.title = `${data.breakdown[2].label}: ${chatPct}%`; }
+      } else if (data.breakdown) {
+        const sysPct = data.breakdown[0]?.percent || 0;
+        const toolPct = data.breakdown[1]?.percent || 0;
+        const userPct = data.breakdown[2]?.percent || 0;
+        const modelPct = data.breakdown[3]?.percent || 0;
+        if (barSys) { barSys.style.width = `${sysPct}%`; barSys.style.display = 'block'; barSys.title = `${data.breakdown[0].label}: ${sysPct}%`; }
+        if (barTool) { barTool.style.width = `${toolPct}%`; barTool.style.display = 'block'; barTool.title = `${data.breakdown[1].label}: ${toolPct}%`; }
+        if (barUser) { barUser.style.width = `${userPct}%`; barUser.style.display = 'block'; barUser.title = `${data.breakdown[2].label}: ${userPct}%`; }
+        if (barModel) { barModel.style.width = `${modelPct}%`; barModel.style.display = 'block'; barModel.title = `${data.breakdown[3].label}: ${modelPct}%`; }
+      }
+
+      // Breakdown list
+      const bList = document.getElementById('session-breakdown-list');
+      const swatches = ['var(--bar-sys)', 'var(--bar-tool)', 'var(--bar-model)', 'var(--bar-user)'];
+      bList.innerHTML = (data.breakdown || []).map((b, i) => {
+        const swatch = swatches[i % swatches.length];
+        return `
+          <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 flex items-center justify-between shadow-sm">
+            <div class="flex items-center space-x-2">
+              <span class="w-2.5 h-2.5 rounded-sm" style="background-color: ${swatch};"></span>
+              <div>
+                <div class="text-xs font-medium text-[var(--foreground)]">${b.label}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] font-mono">${b.tokens.toLocaleString()} tokens</div>
+              </div>
+            </div>
+            <span class="text-xs font-mono font-medium text-[var(--foreground)]">${b.percent}%</span>
+          </div>
+        `;
+      }).join('');
+
+      // Tool Stats
+      const tList = document.getElementById('session-tool-stats-list');
+      const toolEntries = Object.entries(data.toolStats || {});
+      const totalTools = toolEntries.reduce((sum, [, s]) => sum + s.count, 0);
+      document.getElementById('session-total-tool-count').textContent = `${totalTools} 次`;
+
+      if (toolEntries.length === 0) {
+        tList.innerHTML = '<div class="text-[11px] text-[var(--muted-foreground)]">尚无工具调用记录</div>';
+      } else {
+        tList.innerHTML = toolEntries.map(([name, s]) => `
+          <div class="flex items-center justify-between text-xs py-1 border-b border-[var(--border-subtle)] last:border-0 font-mono">
+            <span class="text-[var(--foreground)]">${name}</span>
+            <span class="text-[var(--muted-foreground)]">${s.count} 次</span>
+          </div>
+        `).join('');
+      }
+
+      // Consumers
+      const cList = document.getElementById('session-top-consumers-list');
+      if (!data.topConsumers || data.topConsumers.length === 0) {
+        cList.innerHTML = '<div class="text-[11px] text-[var(--muted-foreground)]">暂无大体积上下文项</div>';
+      } else {
+        cList.innerHTML = data.topConsumers.map((c, i) => `
+          <div class="bg-[var(--card-subtle)] border border-[var(--border)] rounded-lg p-2.5 space-y-1">
+            <div class="flex items-center justify-between text-xs">
+              <div class="flex items-center space-x-1.5">
+                <span class="px-1.5 py-0.2 rounded border border-[var(--border)] text-[10px] font-mono text-[var(--muted-foreground)]">#${i+1}</span>
+                <span class="font-medium text-[var(--foreground)]">${c.label}</span>
+                <span class="text-[10px] text-[var(--muted-foreground)] font-mono">Step ${c.step_index}</span>
+              </div>
+              <span class="text-xs font-mono text-[var(--foreground)] font-medium">~${c.tokens.toLocaleString()} tok</span>
+            </div>
+            <p class="text-[11px] text-[var(--muted-foreground)] truncate font-mono">${escapeHtml(c.details)}</p>
+          </div>
+        `).join('');
+      }
+
+      // Timeline chart
+      renderSessionTimelineChart(data.timeline || []);
+
+      // Advice
+      const aList = document.getElementById('session-advice-list');
+      aList.innerHTML = (data.recommendations || []).map(r => `
+        <div class="p-3 rounded-lg border border-[var(--border)] bg-[var(--card-subtle)] text-xs space-y-0.5">
+          <div class="font-medium text-[var(--foreground)]">${r.title}</div>
+          <div class="text-[11px] text-[var(--muted-foreground)]">${r.action}</div>
+        </div>
+      `).join('');
+    }
+
+    function formatAxisToken(n) {
+      if (n >= 1e6) {
+        const m = n / 1e6;
+        return (m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)) + 'M';
+      }
+      if (n >= 1e3) {
+        const k = n / 1e3;
+        return (k % 1 === 0 ? k.toFixed(0) : (k >= 100 ? k.toFixed(0) : k.toFixed(1))) + 'K';
+      }
+      return n.toString();
+    }
+
+    function renderSessionTimelineChart(timeline) {
+      const svg = document.getElementById('session-evolution-chart');
+      const tooltip = document.getElementById('tl-chart-tooltip');
+      if (!svg) return;
+
+      if (!timeline || timeline.length === 0) {
+        svg.innerHTML = '<text x="50%" y="50%" fill="currentColor" font-size="11" text-anchor="middle" class="text-[var(--muted-foreground)]">暂无历史轨迹数据</text>';
+        const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+        setTxt('tl-stat-init', '--');
+        setTxt('tl-stat-curr', '--');
+        setTxt('tl-stat-curr-sub', '第 -- 轮');
+        setTxt('tl-stat-peak', '--');
+        setTxt('tl-stat-peak-sub', '第 -- 轮');
+        setTxt('tl-stat-rate', '--');
+        setTxt('tl-turns-badge', '0 轮数据');
+        return;
+      }
+
+      const points = timeline;
+      const firstPt = points[0];
+      const lastPt = points[points.length - 1];
+      const peakPt = points.reduce((max, p) => p.total_context > max.total_context ? p : max, points[0]);
+      const avgGrowth = Math.round((lastPt.total_context - firstPt.total_context) / Math.max(1, points.length - 1));
+
+      // Update KPI summary cards
+      const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+      setTxt('tl-stat-init', firstPt.total_context.toLocaleString());
+      setTxt('tl-stat-curr', lastPt.total_context.toLocaleString());
+      setTxt('tl-stat-curr-sub', `第 ${lastPt.turn} 轮`);
+      setTxt('tl-stat-peak', peakPt.total_context.toLocaleString());
+      setTxt('tl-stat-peak-sub', `出现在第 ${peakPt.turn} 轮`);
+      setTxt('tl-stat-rate', `${avgGrowth >= 0 ? '+' : ''}${avgGrowth.toLocaleString()} / 轮`);
+      setTxt('tl-turns-badge', `共 ${points.length} 轮数据`);
+
+      // Coordinate system setup
+      const width = 540;
+      const height = 180;
+      const padLeft = 48;
+      const padRight = 20;
+      const padTop = 24;
+      const padBottom = 26;
+      const plotW = width - padLeft - padRight;
+      const plotH = height - padTop - padBottom;
+      const xMin = padLeft;
+      const xMax = padLeft + plotW;
+      const yMin = padTop;
+      const yMax = padTop + plotH;
+
+      // Calculate nice max ceiling for Y-axis
+      const rawMax = Math.max(peakPt.total_context, 1000);
+      let niceMax = Math.ceil(rawMax * 1.08);
+      const mag = Math.pow(10, Math.max(1, Math.floor(Math.log10(niceMax))));
+      niceMax = Math.ceil(niceMax / (mag / 4)) * (mag / 4);
+
+      // 5 Y-axis grid levels (0%, 25%, 50%, 75%, 100%)
+      const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map(frac => {
+        const val = niceMax * frac;
+        const y = yMax - frac * plotH;
+        return { val, y, label: formatAxisToken(val) };
+      });
+
+      // X-axis turn ticks: select 4-6 evenly spaced turns
+      const totalPoints = points.length;
+      let xIndices = [];
+      if (totalPoints <= 6) {
+        xIndices = points.map((_, i) => i);
+      } else {
+        const step = (totalPoints - 1) / 4;
+        for (let i = 0; i <= 4; i++) {
+          xIndices.push(Math.round(i * step));
+        }
+        xIndices = Array.from(new Set(xIndices));
+      }
+
+      const xTicks = xIndices.map(idx => {
+        const p = points[idx];
+        const x = padLeft + (idx / Math.max(1, totalPoints - 1)) * plotW;
+        return { idx, p, x, label: `第${p.turn}轮` };
+      });
+
+      // Calculate coords for all points
+      const coords = points.map((p, i) => {
+        const x = padLeft + (i / Math.max(1, totalPoints - 1)) * plotW;
+        const y = yMax - (p.total_context / niceMax) * plotH;
+        return { x, y, p, i };
+      });
+
+      const lineD = 'M ' + coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' L ');
+      const areaD = lineD + ` L ${coords[coords.length - 1].x.toFixed(1)},${yMax} L ${coords[0].x.toFixed(1)},${yMax} Z`;
+
+      // Peak coordinate
+      const peakCoord = coords.find(c => c.p === peakPt) || coords[0];
+      const lastCoord = coords[coords.length - 1];
+
+      // Build SVG elements
+      const yGridLines = yTicks.map(t => `
+        <line x1="${padLeft}" y1="${t.y.toFixed(1)}" x2="${xMax}" y2="${t.y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3,3" opacity="0.6" stroke-width="0.8" />
+        <text x="${padLeft - 6}" y="${(t.y + 3).toFixed(1)}" text-anchor="end" font-size="9" font-family="'Google Sans Code', monospace" fill="var(--muted-foreground)">${t.label}</text>
+      `).join('');
+
+      const xAxisTicks = xTicks.map(t => `
+        <line x1="${t.x.toFixed(1)}" y1="${yMax}" x2="${t.x.toFixed(1)}" y2="${yMax + 4}" stroke="var(--border)" stroke-width="1" />
+        <text x="${t.x.toFixed(1)}" y="${yMax + 14}" text-anchor="middle" font-size="9" font-family="'Google Sans Code', monospace" fill="var(--muted-foreground)">${t.label}</text>
+      `).join('');
+
+      // Draw point circles if <= 50 points
+      const pointCircles = (totalPoints <= 50) ? coords.map(c => `
+        <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="1.8" fill="var(--card)" stroke="var(--foreground)" stroke-width="1.2" />
+      `).join('') : '';
+
+      // Peak Callout Tag
+      const peakTagX = Math.max(padLeft + 36, Math.min(xMax - 36, peakCoord.x));
+      const peakTagY = Math.max(padTop + 14, peakCoord.y - 12);
+
+      svg.innerHTML = `
+        <defs>
+          <linearGradient id="tlGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--foreground)" stop-opacity="0.14"/>
+            <stop offset="100%" stop-color="var(--foreground)" stop-opacity="0.0"/>
+          </linearGradient>
+        </defs>
+
+        <!-- Y Axis Grid & Labels -->
+        ${yGridLines}
+
+        <!-- X Axis Base Line & Ticks -->
+        <line x1="${padLeft}" y1="${yMax}" x2="${xMax}" y2="${yMax}" stroke="var(--border)" stroke-width="1.2" />
+        ${xAxisTicks}
+
+        <!-- Area & Curve -->
+        <path d="${areaD}" fill="url(#tlGradient)" />
+        <path d="${lineD}" fill="none" stroke="var(--foreground)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+
+        <!-- Point dots -->
+        ${pointCircles}
+
+        <!-- Peak Point Callout Marker -->
+        <circle cx="${peakCoord.x.toFixed(1)}" cy="${peakCoord.y.toFixed(1)}" r="3.5" fill="#16a34a" stroke="var(--card)" stroke-width="1.8" />
+        <g transform="translate(${peakTagX.toFixed(1)}, ${peakTagY.toFixed(1)})">
+          <rect x="-35" y="-12" width="70" height="15" rx="3.5" fill="var(--card)" stroke="#16a34a" stroke-width="1" opacity="0.95" />
+          <text x="0" y="-1.5" text-anchor="middle" font-size="8.5" font-family="'Google Sans Code', 'Google Sans Flex', monospace" font-weight="bold" fill="#16a34a">峰值 ${formatAxisToken(peakPt.total_context)}</text>
+        </g>
+
+        <!-- Latest Point Marker -->
+        <circle cx="${lastCoord.x.toFixed(1)}" cy="${lastCoord.y.toFixed(1)}" r="3.5" fill="var(--foreground)" stroke="var(--card)" stroke-width="1.5" />
+
+        <!-- Interactive Crosshair (Hidden by default) -->
+        <g id="tl-crosshair-group" style="display: none;">
+          <line id="tl-crosshair-line" x1="0" y1="${padTop}" x2="0" y2="${yMax}" stroke="var(--muted-foreground)" stroke-dasharray="2,2" stroke-width="1" opacity="0.8" />
+          <circle id="tl-crosshair-dot" cx="0" cy="0" r="4.5" fill="var(--foreground)" stroke="var(--card)" stroke-width="2" />
+        </g>
+      `;
+
+      // Attach hover listener to SVG
+      const crosshair = document.getElementById('tl-crosshair-group');
+      const crossLine = document.getElementById('tl-crosshair-line');
+      const crossDot = document.getElementById('tl-crosshair-dot');
+
+      svg.onmousemove = (e) => {
+        const rect = svg.getBoundingClientRect();
+        const relX = (e.clientX - rect.left) / rect.width;
+        const svgX = relX * width;
+
+        if (svgX < padLeft - 10 || svgX > xMax + 10) {
+          if (crosshair) crosshair.style.display = 'none';
+          if (tooltip) tooltip.classList.add('hidden');
+          return;
+        }
+
+        const clampedSvgX = Math.max(padLeft, Math.min(xMax, svgX));
+        const frac = (clampedSvgX - padLeft) / plotW;
+        const idx = Math.min(coords.length - 1, Math.max(0, Math.round(frac * (coords.length - 1))));
+        const c = coords[idx];
+
+        if (crosshair) crosshair.style.display = '';
+        if (crossLine) {
+          crossLine.setAttribute('x1', c.x.toFixed(1));
+          crossLine.setAttribute('x2', c.x.toFixed(1));
+        }
+        if (crossDot) {
+          crossDot.setAttribute('cx', c.x.toFixed(1));
+          crossDot.setAttribute('cy', c.y.toFixed(1));
+        }
+
+        const ttTurn = document.getElementById('tt-turn');
+        const ttStep = document.getElementById('tt-step');
+        const ttTotal = document.getElementById('tt-total');
+        const ttCache = document.getElementById('tt-cache');
+        const ttInput = document.getElementById('tt-input');
+        const ttOutput = document.getElementById('tt-output');
+
+        if (ttTurn) ttTurn.textContent = `第 ${c.p.turn} 轮`;
+        if (ttStep) ttStep.textContent = `Step ${c.p.step}`;
+        if (ttTotal) ttTotal.textContent = `${c.p.total_context.toLocaleString()} tok`;
+        if (ttCache) ttCache.textContent = `${(c.p.cache_tokens || 0).toLocaleString()} tok`;
+        if (ttInput) ttInput.textContent = `${(c.p.input_tokens || 0).toLocaleString()} tok`;
+        if (ttOutput) ttOutput.textContent = `${(c.p.output_tokens || 0).toLocaleString()} tok`;
+
+        const prev = idx > 0 ? coords[idx - 1].p.total_context : c.p.total_context;
+        const diff = c.p.total_context - prev;
+        const diffEl = document.getElementById('tt-delta');
+        if (diffEl) {
+          diffEl.textContent = `${diff >= 0 ? '+' : ''}${diff.toLocaleString()} tok`;
+          diffEl.className = diff > 0 ? 'font-mono font-medium text-[#dc2626]' : (diff < 0 ? 'font-mono font-medium text-[#16a34a]' : 'font-mono font-medium text-[var(--muted-foreground)]');
+        }
+
+        if (tooltip) {
+          tooltip.classList.remove('hidden');
+          const ttWidth = 180;
+          let leftPx = (c.x / width) * rect.width;
+          if (leftPx + ttWidth > rect.width - 10) {
+            leftPx = leftPx - ttWidth - 10;
+          } else {
+            leftPx = leftPx + 10;
+          }
+          let topPx = (c.y / height) * rect.height - 45;
+          topPx = Math.max(10, Math.min(rect.height - 130, topPx));
+          tooltip.style.left = `${Math.max(10, leftPx)}px`;
+          tooltip.style.top = `${topPx}px`;
+        }
+      };
+
+      svg.onmouseleave = () => {
+        if (crosshair) crosshair.style.display = 'none';
+        if (tooltip) tooltip.classList.add('hidden');
+      };
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      fetchSessionContext();
+      setInterval(() => {
+        refreshCurrentView();
+      }, 10000);
+    });
+  </script>
+</body>
+</html>

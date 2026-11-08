@@ -1,0 +1,14 @@
+{
+  "name": "agy-context",
+  "displayName": "Context Inspector",
+  "description": "q1u 原生开发的 Antigravity 实时上下文与 Token 用量监控插件，支持会话窗口构成深度剖析、全局用量明细与直方图大盘，原生嵌入右侧辅助侧边栏（Auxiliary Pane）静默运行。",
+  "version": "1.0.0",
+  "author": "q1u",
+  "homepage": "https://github.com/q1u/agy-context",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "查看当前对话的详细上下文用量与 Token 消耗",
+    "分析哪些工具或文件占用了最多的上下文空间",
+    "检查 Prompt 缓存命中率与上下文压缩优化建议"
+  ]
+}
