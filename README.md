@@ -7,7 +7,7 @@
   <a href="https://github.com/q1uuuu/agy-context"><img src="https://img.shields.io/badge/Node.js-%3E%3D18.0-339933.svg?logo=node.js" alt="Node.js"></a>
 </p>
 
-由 **q1u** 原生自主研发的高性能本地 Token 用量与上下文深度监控插件，专为 **Google Antigravity** 平台量身打造。
+高性能本地 Token 用量与上下文深度监控插件，专为 **Google Antigravity** 平台量身打造。
 
 原生嵌入 Antigravity 右侧辅助侧边栏（Auxiliary Pane），基于后台静默 Sidecar 守护进程常驻运行，提供当前会话深度上下文诊断、本地全局用量大盘分析以及在线一键无感升级。
 
@@ -18,7 +18,7 @@
 
 ---
 
-## 📸 界面实机预览 (Screenshots)
+##  界面实机预览 (Screenshots)
 
 <p align="center">
   <img src="assets/preview.jpg" alt="当前会话深度上下文 (单会话视图与增长曲线)" width="48%">

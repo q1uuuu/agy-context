@@ -14,8 +14,45 @@ Write-Host "  Antigravity Context & Token Inspector (agy-context) Installer  " -
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 1. Install Plugin Bundle (Sidecar is natively included in plugin)
-Write-Host "[1/3] Installing Plugin Bundle..." -ForegroundColor Yellow
+# 1. Environment Pre-flight Check
+Write-Host "[1/4] Running Environment Pre-flight Check..." -ForegroundColor Yellow
+
+# 1.1 Check Antigravity host directories & storage
+$geminiDir = Join-Path $userDir ".gemini"
+$antigravityDir = Join-Path $geminiDir "antigravity"
+$convDir = Join-Path $antigravityDir "conversations"
+
+if (Test-Path $convDir) {
+    $dbCount = (Get-ChildItem -Path $convDir -Filter "*.db" -ErrorAction SilentlyContinue).Count
+    Write-Host "      [OK] Antigravity Conversation Storage: $dbCount database(s) found" -ForegroundColor Green
+} elseif (Test-Path $antigravityDir) {
+    Write-Host "      [INFO] Antigravity Storage: Initialized (conversation databases will appear after first chat)" -ForegroundColor Gray
+} else {
+    Write-Host "      [INFO] Antigravity directory (~/.gemini/antigravity) will be auto-created on launch" -ForegroundColor Gray
+}
+
+# 1.2 Check Antigravity Embedded Runtime & SQLite Engine
+$agyNodePath = Join-Path $env:APPDATA "Antigravity\bin\agy-node.cmd"
+$hasWinSqlite = Test-Path "$env:SystemRoot\System32\winsqlite3.dll"
+$hasSqliteCli = [bool](Get-Command sqlite3 -ErrorAction SilentlyContinue)
+
+if (Test-Path $agyNodePath) {
+    Write-Host "      [OK] Antigravity Embedded Node (agy-node v24): Detected (node:sqlite enabled)" -ForegroundColor Green
+} else {
+    Write-Host "      [INFO] Antigravity runtime (agy-node) will be linked automatically by the IDE" -ForegroundColor Gray
+}
+
+if ($hasWinSqlite) {
+    Write-Host "      [OK] Windows Native SQLite (winsqlite3.dll): Available (Zero-dependency fallback ready)" -ForegroundColor Green
+} elseif ($hasSqliteCli) {
+    Write-Host "      [OK] System sqlite3 CLI: Found in PATH" -ForegroundColor Green
+} else {
+    Write-Host "      [WARN] Neither winsqlite3.dll nor sqlite3 CLI found in System32/PATH." -ForegroundColor DarkYellow
+    Write-Host "             Note: If running outside Antigravity, you can optionally install sqlite3 (e.g. winget install sqlite.sqlite)." -ForegroundColor DarkYellow
+}
+
+# 2. Install Plugin Bundle (Sidecar is natively included in plugin)
+Write-Host "[2/4] Installing Plugin Bundle..." -ForegroundColor Yellow
 $samePluginDir = ($scriptDir.TrimEnd('\/') -eq $targetPluginDir.TrimEnd('\/'))
 if (-not $samePluginDir) {
     if (-not (Test-Path $targetPluginDir)) {
@@ -27,18 +64,55 @@ if (-not $samePluginDir) {
     Copy-Item -Path (Join-Path $scriptDir "install.sh") -Destination $targetPluginDir -Force
     Copy-Item -Path (Join-Path $scriptDir "uninstall.ps1") -Destination $targetPluginDir -Force
     Copy-Item -Path (Join-Path $scriptDir "uninstall.sh") -Destination $targetPluginDir -Force
-    # Clean redundant sidecar scripts if present
+    # Clean redundant sidecar scripts and obsolete rules if present
     $redundantScripts = Join-Path $targetPluginDir "sidecars\context-panel\scripts"
     if (Test-Path $redundantScripts) {
         Remove-Item -Path $redundantScripts -Recurse -Force
     }
+    $obsoleteRules = Join-Path $targetPluginDir "rules"
+    if (Test-Path $obsoleteRules) {
+        Remove-Item -Path $obsoleteRules -Recurse -Force
+    }
     Write-Host "      [OK] Plugin files installed to: $targetPluginDir" -ForegroundColor Green
 } else {
+    $obsoleteRules = Join-Path $targetPluginDir "rules"
+    if (Test-Path $obsoleteRules) {
+        Remove-Item -Path $obsoleteRules -Recurse -Force
+    }
     Write-Host "      [OK] Plugin directory is current location ($targetPluginDir)" -ForegroundColor Green
 }
 
+# 2.1 Ensure plugin is registered & enabled in ~/.gemini/config/config.json
+$cfgPath = Join-Path $userDir ".gemini\config\config.json"
+if (Test-Path $cfgPath) {
+    try {
+        $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        $changed = $false
+        if (-not $cfg.plugins) {
+            $cfg | Add-Member -MemberType NoteProperty -Name "plugins" -Value ([PSCustomObject]@{})
+            $changed = $true
+        }
+        if (-not $cfg.plugins.'agy-context') {
+            $cfg.plugins | Add-Member -MemberType NoteProperty -Name "agy-context" -Value ([PSCustomObject]@{ enabled = $true })
+            $changed = $true
+        } elseif ($cfg.plugins.'agy-context'.enabled -ne $true) {
+            $cfg.plugins.'agy-context'.enabled = $true
+            $changed = $true
+        }
+        if ($changed) {
+            $json = $cfg | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText($cfgPath, $json, [System.Text.Encoding]::UTF8)
+            Write-Host "      [OK] Registered agy-context in config.json plugins map." -ForegroundColor Green
+        } else {
+            Write-Host "      [OK] Plugin agy-context is registered in config.json." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "      [WARN] Could not update config.json: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
 # 2. Clean Legacy Standalone Sidecar (Avoid duplicate menu items)
-Write-Host "[2/3] Checking for legacy standalone sidecar configurations..." -ForegroundColor Yellow
+Write-Host "[3/4] Checking for legacy standalone sidecar configurations..." -ForegroundColor Yellow
 if (Test-Path $legacySidecarDir) {
     Remove-Item -Path $legacySidecarDir -Recurse -Force
     Write-Host "      [OK] Cleaned legacy standalone sidecar to prevent duplicate items." -ForegroundColor Green
@@ -47,7 +121,7 @@ if (Test-Path $legacySidecarDir) {
 }
 
 # 3. Auto-Activate Plugin Sidecar Daemon if Antigravity is running
-Write-Host "[3/3] Checking Antigravity Language Server status..." -ForegroundColor Yellow
+Write-Host "[4/4] Checking Antigravity Language Server status..." -ForegroundColor Yellow
 
 function Activate-AntigravitySidecar {
     param([string]$SidecarId = "agy-context/context-panel")

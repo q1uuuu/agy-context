@@ -442,7 +442,7 @@ export async function applyOneClickUpdate(onProgress = () => {}) {
   // 3. Backup current files
   onProgress({ stage: 'installing', percent: 80, message: '备份当前版本并原子覆写...' });
   fs.mkdirSync(backupDir, { recursive: true });
-  const criticalItems = ['scripts', 'sidecars', 'rules', 'assets', 'plugin.json', 'install.sh', 'install.ps1', 'uninstall.sh', 'uninstall.ps1', 'README.md'];
+  const criticalItems = ['scripts', 'sidecars', 'assets', 'plugin.json', 'install.sh', 'install.ps1', 'uninstall.sh', 'uninstall.ps1', 'README.md'];
   for (const item of criticalItems) {
     const src = path.join(PLUGIN_ROOT, item);
     if (fs.existsSync(src)) {
@@ -472,6 +472,15 @@ export async function applyOneClickUpdate(onProgress = () => {}) {
       }
     }
     throw new Error(`文件更新失败，已安全回滚: ${err.message}`);
+  }
+
+  // 4.1 Clean obsolete directories from older versions (e.g. rules, redundant scripts)
+  const obsoleteDirs = ['rules', path.join('sidecars', 'context-panel', 'scripts')];
+  for (const obs of obsoleteDirs) {
+    const obsPath = path.join(PLUGIN_ROOT, obs);
+    if (fs.existsSync(obsPath)) {
+      try { fs.rmSync(obsPath, { recursive: true, force: true }); } catch (_) {}
+    }
   }
 
   // Clean temp directory
