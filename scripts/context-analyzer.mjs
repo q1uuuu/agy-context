@@ -8,11 +8,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import cp from 'node:child_process';
+import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+let DatabaseSync = null;
+try {
+  DatabaseSync = require('node:sqlite').DatabaseSync;
+} catch {}
 
 // Known model limits (in tokens) - Antigravity runtime assigns a 256k budget limit (256,000 nominal)
 export const MODEL_LIMITS = {
@@ -318,6 +326,15 @@ function getDuration(buf) {
  * @returns {Array} Array of parsed JSON objects
  */
 function querySqlite(dbPath, sql, timeout = 8000) {
+  if (DatabaseSync) {
+    const db = new DatabaseSync(dbPath, { readOnly: true, timeout });
+    try {
+      return db.prepare(sql).all();
+    } finally {
+      try { db.close(); } catch {}
+    }
+  }
+
   const stdout = cp.execFileSync('sqlite3', ['-batch', '-json', dbPath, sql], {
     encoding: 'utf8',
     maxBuffer: 50 * 1024 * 1024,
@@ -421,6 +438,7 @@ export function scanNativeStatsJs() {
         }
       }
     } catch (e) {
+      if (e.code === 'ENOENT') throw e;
       // Graceful fallback if archive db is locked or unavailable
     }
   }
@@ -471,6 +489,7 @@ export function scanNativeStatsJs() {
         stepRecords.push({ ts, textComplete });
       }
     } catch (e) {
+      if (e.code === 'ENOENT') throw e;
       unreadable++;
       continue;
     }
@@ -553,6 +572,7 @@ export function scanNativeStatsJs() {
         }
       }
     } catch (e) {
+      if (e.code === 'ENOENT') throw e;
       // Next db
     }
   }
@@ -718,6 +738,7 @@ export function scanNativeStatsPs1() {
   const candidates = [
     path.join(__dirname, 'native-token-scanner.ps1'),
     path.join(__dirname, 'scripts', 'native-token-scanner.ps1'),
+    path.resolve(__dirname, '..', 'scripts', 'native-token-scanner.ps1'),
     path.join(home, '.gemini', 'config', 'plugins', 'agy-context', 'scripts', 'native-token-scanner.ps1'),
     path.join(home, '.gemini', 'config', 'plugins', 'agy-context', 'sidecars', 'context-panel', 'scripts', 'native-token-scanner.ps1')
   ];
@@ -764,15 +785,24 @@ export function runNativeStatsScan(force = false) {
 
   try {
     let result = null;
-    // On macOS / Linux, sqlite3 CLI is standard and natively fast
-    if (process.platform === 'darwin' || process.platform === 'linux') {
+    // Try pure JS native scanner first (uses node:sqlite if available, or system sqlite3 CLI)
+    try {
       result = scanNativeStatsJs();
-    } else {
-      // On Windows, try pure JS first if sqlite3 CLI is in PATH, then fall back to PowerShell winsqlite3
-      try {
-        result = scanNativeStatsJs();
-      } catch (e) {
+    } catch (e) {
+      // On Windows, fall back to PowerShell winsqlite3 scanner if JS scanner fails (e.g. no sqlite3 CLI)
+      if (process.platform === 'win32') {
         result = scanNativeStatsPs1();
+      } else {
+        throw e;
+      }
+    }
+
+    // Secondary safety guard: on Windows, if result scanned databases but every single one was unreadable,
+    // it indicates sqlite query execution failed completely, so fall back to native-token-scanner.ps1.
+    if (process.platform === 'win32' && (!result || (result.databases_scanned > 0 && result.generations_scanned === 0 && result.unreadable_databases === result.databases_scanned))) {
+      const psResult = scanNativeStatsPs1();
+      if (psResult) {
+        result = psResult;
       }
     }
 
@@ -1035,63 +1065,65 @@ export function analyzeGlobalTokens(range = 'today') {
 }
 
 // In-memory cache for Language Server auth to prevent process/network spamming
-let cachedLsAuth = { port: 0, csrf: '', timestamp: 0 };
+let cachedLsAuth = null;
 
 /**
  * Resolves Antigravity Language Server port and CSRF token
+ * Evaluates both the internal Connect-RPC port (HTTP) and Web UI port (HTTPS)
  * @param {boolean} [forceRefresh=false]
- * @returns {Promise<{port: number, csrf: string}|null>}
+ * @returns {Promise<{port: number, csrf: string, protocol: string, candidates: Array}|null>}
  */
 export async function getLanguageServerAuth(forceRefresh = false) {
   const now = Date.now();
-  if (!forceRefresh && cachedLsAuth.port && cachedLsAuth.csrf && (now - cachedLsAuth.timestamp < 300000)) {
+  if (!forceRefresh && cachedLsAuth && (now - cachedLsAuth.timestamp < 300000)) {
     return cachedLsAuth;
   }
 
-  // 0. Check Environment Variables first
-  let port = 0;
-  let csrf = process.env.ANTIGRAVITY_CSRF_TOKEN || '';
+  const candidates = [];
+
+  // 1. Check environment variable candidate (Antigravity Connect-RPC, plain HTTP)
   if (process.env.ANTIGRAVITY_LS_ADDRESS) {
     const parts = process.env.ANTIGRAVITY_LS_ADDRESS.split(':');
-    if (parts.length === 2) port = parseInt(parts[1], 10);
-  }
-
-  // 1. Resolve Language Server Port from main.log across platforms
-  if (!port) {
-    const home = os.homedir();
-    const candidateLogPaths = [
-      // Windows
-      path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Antigravity', 'logs', 'main.log'),
-      // macOS
-      path.join(home, 'Library', 'Logs', 'Antigravity', 'main.log'),
-      path.join(home, 'Library', 'Application Support', 'Antigravity', 'logs', 'main.log'),
-      // Linux
-      path.join(home, '.config', 'Antigravity', 'logs', 'main.log')
-    ];
-
-    for (const mainLogPath of candidateLogPaths) {
-      if (fs.existsSync(mainLogPath)) {
-        try {
-          const content = fs.readFileSync(mainLogPath, 'utf8');
-          const matches = [...content.matchAll(/Reloading all windows with URL: https:\/\/127\.0\.0\.1:(\d+)/g)];
-          if (matches.length > 0) {
-            port = parseInt(matches[matches.length - 1][1], 10);
-            break;
-          }
-        } catch (e) {}
-      }
+    if (parts.length === 2) {
+      const port = parseInt(parts[1], 10);
+      const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN || '';
+      candidates.push({ port, protocol: 'http', csrf, source: 'env' });
     }
   }
 
-  if (!port) port = 49671; // Fallback default port
+  // 2. Resolve Language Server Web UI port from main.log across platforms (HTTPS)
+  const home = os.homedir();
+  const candidateLogPaths = [
+    // Windows
+    path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Antigravity', 'logs', 'main.log'),
+    // macOS
+    path.join(home, 'Library', 'Logs', 'Antigravity', 'main.log'),
+    path.join(home, 'Library', 'Application Support', 'Antigravity', 'logs', 'main.log'),
+    // Linux
+    path.join(home, '.config', 'Antigravity', 'logs', 'main.log')
+  ];
 
-  // 2. Resolve CSRF Token via fast HTTPS GET to Language Server Web UI
-  if (!csrf && port) {
+  let logPort = 0;
+  for (const mainLogPath of candidateLogPaths) {
+    if (fs.existsSync(mainLogPath)) {
+      try {
+        const logContent = fs.readFileSync(mainLogPath, 'utf8');
+        const matches = [...logContent.matchAll(/Reloading all windows with URL: https:\/\/127\.0\.0\.1:(\d+)/g)];
+        if (matches.length > 0) {
+          logPort = parseInt(matches[matches.length - 1][1], 10);
+          break;
+        }
+      } catch (e) {}
+    }
+  }
+
+  let logCsrf = '';
+  if (logPort) {
     try {
-      csrf = await new Promise((resolve) => {
+      logCsrf = await new Promise((resolve) => {
         const req = https.get({
           hostname: '127.0.0.1',
-          port,
+          port: logPort,
           path: '/',
           rejectUnauthorized: false,
           timeout: 1200
@@ -1107,10 +1139,13 @@ export async function getLanguageServerAuth(forceRefresh = false) {
         req.on('timeout', () => { req.destroy(); resolve(''); });
       });
     } catch (e) {}
+
+    candidates.push({ port: logPort, protocol: 'https', csrf: logCsrf, source: 'main.log' });
   }
 
-  // 3. Fallback: query language_server process command line with platform awareness
-  if (!csrf) {
+  // 3. Fallback: query language_server process command line with platform awareness if CSRF is missing
+  let anyCsrf = candidates.find(c => c.csrf)?.csrf || '';
+  if (!anyCsrf) {
     try {
       if (process.platform === 'win32') {
         const psCmd = 'Get-Process -Name language_server -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id';
@@ -1118,16 +1153,15 @@ export async function getLanguageServerAuth(forceRefresh = false) {
         if (pid) {
           const cmdLine = cp.execSync(`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId = ${pid}\\").CommandLine"`, { timeout: 3000 }).toString();
           const m = cmdLine.match(/--csrf_token\s+([a-f0-9-]+)/i);
-          if (m) csrf = m[1];
+          if (m) anyCsrf = m[1];
         }
       } else {
-        // macOS / Linux: query ps aux directly
         const psOutput = cp.execSync('ps aux', { timeout: 3000, encoding: 'utf8' });
         for (const line of psOutput.split('\n')) {
           if (line.includes('language_server') && !line.includes('grep')) {
             const m = line.match(/--csrf_token\s+([a-f0-9-]+)/i);
             if (m) {
-              csrf = m[1];
+              anyCsrf = m[1];
               break;
             }
           }
@@ -1136,10 +1170,26 @@ export async function getLanguageServerAuth(forceRefresh = false) {
     } catch (e) {}
   }
 
-  if (port && csrf) {
-    cachedLsAuth = { port, csrf, timestamp: now };
+  // Backfill discovered CSRF token across candidates
+  if (anyCsrf) {
+    for (const c of candidates) {
+      if (!c.csrf) c.csrf = anyCsrf;
+    }
+  }
+
+  const valid = candidates.filter(c => c.port && c.csrf);
+  if (valid.length > 0) {
+    const primary = valid[0];
+    cachedLsAuth = {
+      port: primary.port,
+      csrf: primary.csrf,
+      protocol: primary.protocol || 'http',
+      candidates: valid,
+      timestamp: now
+    };
     return cachedLsAuth;
   }
+
   return null;
 }
 
@@ -1152,7 +1202,7 @@ export async function fetchOfficialContextUsage(conversationId) {
   if (!conversationId) return null;
 
   const auth = await getLanguageServerAuth();
-  if (!auth || !auth.port || !auth.csrf) return null;
+  if (!auth || !auth.candidates || auth.candidates.length === 0) return null;
 
   const runRequest = (targetAuth) => new Promise((resolve) => {
     let resolved = false;
@@ -1175,13 +1225,14 @@ export async function fetchOfficialContextUsage(conversationId) {
     envelope.writeUInt32BE(jsonBuf.length, 1);
     jsonBuf.copy(envelope, 5);
 
-    const req = https.request({
+    const client = targetAuth.protocol === 'https' ? https : http;
+    const req = client.request({
       hostname: '127.0.0.1',
       port: targetAuth.port,
       path: '/exa.language_server_pb.LanguageServerService/StreamAgentStateUpdates',
       method: 'POST',
       rejectUnauthorized: false,
-      timeout: 1500,
+      timeout: 1800,
       headers: {
         'Content-Type': 'application/connect+json',
         'Connect-Protocol-Version': '1',
@@ -1238,27 +1289,20 @@ export async function fetchOfficialContextUsage(conversationId) {
     setTimeout(() => {
       req.destroy();
       cleanupAndResolve(null);
-    }, 1500);
+    }, 2000);
   });
 
-  let result = await runRequest(auth);
-  // If first attempt failed, retry once with refreshed auth
-  if (!result) {
-    const refreshedAuth = await getLanguageServerAuth(true);
-    if (refreshedAuth && (refreshedAuth.port !== auth.port || refreshedAuth.csrf !== auth.csrf)) {
-      result = await runRequest(refreshedAuth);
-    }
+  // Try each candidate in order until one returns valid usage
+  for (const candidate of auth.candidates) {
+    try {
+      const result = await runRequest(candidate);
+      if (result) return result;
+    } catch (e) {}
   }
 
-  return result;
+  return null;
 }
 
-/**
- * Analyzes an individual Antigravity conversation transcript
- * @param {string} transcriptPath 
- * @param {object} [options]
- * @returns {Promise<object>} Full context metrics report
- */
 export async function analyzeTranscript(transcriptPath, options = {}) {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     throw new Error(`Transcript file not found: ${transcriptPath}`);

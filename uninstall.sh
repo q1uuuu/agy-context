@@ -33,6 +33,30 @@ rm -rf "${TARGET_SIDECAR_DATA}/agy-context"
 rm -rf "${TARGET_SIDECAR_DATA}/agy-context_context-panel"
 echo "      [OK] Removed plugin and sidecar directories."
 
+# 3. Clean config.json
+CFG_PATH="${USER_DIR}/.gemini/config/config.json"
+if [ -f "${CFG_PATH}" ] && command -v node >/dev/null 2>&1; then
+  node -e '
+    const fs = require("fs");
+    try {
+      const p = process.argv[1];
+      const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+      let changed = false;
+      if (cfg.plugins && cfg.plugins["agy-context"]) {
+        delete cfg.plugins["agy-context"];
+        changed = true;
+      }
+      if (cfg.sidecars && cfg.sidecars["agy-context/context-panel"]) {
+        delete cfg.sidecars["agy-context/context-panel"];
+        changed = true;
+      }
+      if (changed) {
+        fs.writeFileSync(p, JSON.stringify(cfg, null, 2), "utf8");
+      }
+    } catch (e) {}
+  ' "${CFG_PATH}" || true
+fi
+
 echo ""
 echo "================================================================="
 echo "  Uninstallation Complete!                                       "
