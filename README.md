@@ -118,3 +118,8 @@ chmod +x install.sh && ./install.sh
 * **Repository**: [https://github.com/q1uuuu/agy-context](https://github.com/q1uuuu/agy-context)
 * **Platform**: Google Antigravity
 * **License**: [Apache License 2.0](LICENSE) - Copyright (c) 2026 q1u
+
+---
+
+##  致谢与交流
+* **[Linuxdo](https://linux.do)**
