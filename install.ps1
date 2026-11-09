@@ -64,13 +64,21 @@ if (-not $samePluginDir) {
     Copy-Item -Path (Join-Path $scriptDir "install.sh") -Destination $targetPluginDir -Force
     Copy-Item -Path (Join-Path $scriptDir "uninstall.ps1") -Destination $targetPluginDir -Force
     Copy-Item -Path (Join-Path $scriptDir "uninstall.sh") -Destination $targetPluginDir -Force
-    # Clean redundant sidecar scripts if present
+    # Clean redundant sidecar scripts and obsolete rules if present
     $redundantScripts = Join-Path $targetPluginDir "sidecars\context-panel\scripts"
     if (Test-Path $redundantScripts) {
         Remove-Item -Path $redundantScripts -Recurse -Force
     }
+    $obsoleteRules = Join-Path $targetPluginDir "rules"
+    if (Test-Path $obsoleteRules) {
+        Remove-Item -Path $obsoleteRules -Recurse -Force
+    }
     Write-Host "      [OK] Plugin files installed to: $targetPluginDir" -ForegroundColor Green
 } else {
+    $obsoleteRules = Join-Path $targetPluginDir "rules"
+    if (Test-Path $obsoleteRules) {
+        Remove-Item -Path $obsoleteRules -Recurse -Force
+    }
     Write-Host "      [OK] Plugin directory is current location ($targetPluginDir)" -ForegroundColor Green
 }
 
