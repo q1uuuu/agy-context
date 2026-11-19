@@ -1390,6 +1390,139 @@ export async function fetchOfficialContextUsage(conversationId) {
   return null;
 }
 
+function calcMedian(nums) {
+  if (!nums || nums.length === 0) return null;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+function findConversationDbPath(conversationId) {
+  if (!conversationId) return null;
+  const geminiDir = path.join(os.homedir(), '.gemini');
+  if (!fs.existsSync(geminiDir)) return null;
+
+  const primary = path.join(geminiDir, 'antigravity', 'conversations', `${conversationId}.db`);
+  if (fs.existsSync(primary)) return primary;
+
+  try {
+    for (const d of fs.readdirSync(geminiDir)) {
+      if (d.startsWith('antigravity') && d !== 'antigravity') {
+        const candidate = path.join(geminiDir, d, 'conversations', `${conversationId}.db`);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 解析当前会话独立 SQLite 库中的 gen_metadata，统计首字延迟与生成速度
+ * @param {string} conversationId
+ * @returns {object|null}
+ */
+export function analyzeSessionPerformance(conversationId) {
+  const dbPath = findConversationDbPath(conversationId);
+  if (!dbPath) return null;
+
+  try {
+    const genRows = querySqlite(
+      dbPath,
+      'SELECT idx, hex(data) as h, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx',
+      5000
+    );
+    if (!genRows || genRows.length === 0) return null;
+
+    const ttftValues = [];
+    const primaryBodySpeeds = [];
+    const fallbackBodySpeeds = [];
+    let latestTtft = null;
+    let latestPrimaryBodySpeed = null;
+    let latestFallbackBodySpeed = null;
+    let latestTotalSpeed = null;
+    let latestTotalDuration = null;
+
+    let sumOutputTokens = 0;
+    let sumTotalDuration = 0;
+    let durationTurnCount = 0;
+
+    for (const r of genRows) {
+      const blobSize = Number(r.len || 0);
+      if (blobSize > 64 * 1024 * 1024 || !r.h) continue;
+
+      const buf = Buffer.from(r.h, 'hex');
+      const wrapped = getBytesField(1, buf);
+      if (!wrapped) continue;
+
+      const usage = getBytesField(4, wrapped);
+      const outputTokens = usage ? (getVarintField(3, usage) || 0) : 0;
+      const bodyTokens = usage ? (getVarintField(10, usage) || 0) : 0;
+      const firstTextSec = getDuration(getBytesField(11, wrapped));
+      const streamSec = getDuration(getBytesField(12, wrapped));
+
+      if (firstTextSec && firstTextSec > 0) {
+        ttftValues.push(firstTextSec);
+        latestTtft = firstTextSec;
+      }
+
+      if (bodyTokens >= 100 && streamSec && streamSec >= 1.0) {
+        const spd = bodyTokens / streamSec;
+        primaryBodySpeeds.push(spd);
+        latestPrimaryBodySpeed = spd;
+      } else if (bodyTokens >= 20 && streamSec && streamSec >= 0.2) {
+        const spd = bodyTokens / streamSec;
+        fallbackBodySpeeds.push(spd);
+        latestFallbackBodySpeed = spd;
+      }
+
+      const turnDuration = (firstTextSec || 0) + (streamSec || 0);
+      if (turnDuration > 0 && (firstTextSec || streamSec)) {
+        sumOutputTokens += outputTokens;
+        sumTotalDuration += turnDuration;
+        durationTurnCount++;
+        latestTotalDuration = turnDuration;
+        if (outputTokens > 0) {
+          latestTotalSpeed = outputTokens / turnDuration;
+        }
+      }
+    }
+
+    const useFallbackBody = primaryBodySpeeds.length === 0 && fallbackBodySpeeds.length > 0;
+    const bodySpeedList = useFallbackBody ? fallbackBodySpeeds : primaryBodySpeeds;
+    const bodySpeedLatest = useFallbackBody ? latestFallbackBodySpeed : latestPrimaryBodySpeed;
+
+    return {
+      turnCount: genRows.length,
+      ttft: {
+        latest: latestTtft,
+        median: calcMedian(ttftValues),
+        sampleCount: ttftValues.length
+      },
+      bodySpeed: {
+        median: calcMedian(bodySpeedList),
+        latest: bodySpeedLatest,
+        sampleCount: bodySpeedList.length,
+        isShortFallback: useFallbackBody
+      },
+      totalSpeed: {
+        avg: sumTotalDuration > 0 ? sumOutputTokens / sumTotalDuration : null,
+        latest: latestTotalSpeed,
+        sampleCount: durationTurnCount
+      },
+      latency: {
+        totalSeconds: sumTotalDuration > 0 ? sumTotalDuration : null,
+        avgSeconds: durationTurnCount > 0 ? sumTotalDuration / durationTurnCount : null,
+        latestSeconds: latestTotalDuration,
+        sampleCount: durationTurnCount
+      }
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 export async function analyzeTranscript(transcriptPath, options = {}) {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     throw new Error(`Transcript file not found: ${transcriptPath}`);
@@ -1727,6 +1860,8 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
     });
   }
 
+  const performance = conversationId ? analyzeSessionPerformance(conversationId) : null;
+
   return {
     meta: {
       conversationId,
@@ -1748,6 +1883,7 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
       totalOutputTokens,
       totalModelTurns
     },
+    performance,
     breakdown,
     toolStats,
     topConsumers: topConsumers.slice(0, 10),
