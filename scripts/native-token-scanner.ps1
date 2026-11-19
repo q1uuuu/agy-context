@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Antigravity Native Token & Telemetry Engine (by q1u)
     100% self-calculating, zero external app dependency.
@@ -489,6 +489,7 @@ public class NativeTokenScanner {
         foreach (var e in events) {
             DateTime dt = DateTimeOffset.FromUnixTimeSeconds(e.timestamp_seconds).ToLocalTime().DateTime;
             DateTime date = dt.Date;
+            if (date < d30Start || date > todayDate) continue;
             string dateStr = date.ToString("yyyy-MM-dd");
             string hourStr = dt.ToString("yyyy-MM-dd HH:00");
 

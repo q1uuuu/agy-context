@@ -24,15 +24,19 @@ try {
 
 // Known model limits (in tokens) - Antigravity runtime assigns a 256k budget limit (256,000 nominal)
 export const MODEL_LIMITS = {
+  'gemini-4-neon': 256000,
+  'gemini-4-carbon': 256000,
+  'gemini-4-hydrogen': 256000,
+  'gemini-4-argon': 256000,
   'gemini-3.8-flash': 256000,
+  'gemini-3.7-flash': 256000,
+  'gemini-3.6-flash': 256000,
+  'gemini-3.1-pro': 256000,
   'gemini-3-flash': 256000,
   'gemini-1.5-pro': 256000,
   'gemini-1.5-flash': 256000,
   'gemini-flash': 256000,
   'gemini-pro': 256000,
-  'gemini-4-carbon': 256000,
-  'gemini-4-hydrogen': 256000,
-  'gemini-4-argon': 256000,
   'flash': 256000,
   'pro': 256000,
   'flash_lite': 256000,
@@ -114,12 +118,20 @@ export function resolveTranscriptPath(convId, customPath) {
 // Global in-memory cache for native token scan
 let cachedNativeStats = null;
 let lastNativeScanMs = 0;
+let lastNativeScanDateKey = '';
 let isNativeScanning = false;
 
-// OpenRouter real-time API pricing rates ($ per 1M tokens)
-// Configured for active Antigravity models: Gemini 3.8 Flash, Gemini 4 Argon, Gemini 4 Carbon, Gemini 4 Hydrogen,
-// Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B, Claude Sonnet 5.5, Claude Opus 5.5
+// OpenRouter real-time API pricing rates ($ per 1M tokens, synced 2026-11-19)
+// Configured for active & recent Antigravity models:
+// - Gemini 4 family: Neon (new 2026-11-18), Carbon, Argon, Hydrogen (+ Orchestrator labels)
+// - Gemini 3.x family: 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.1 Pro, Nano Banana 2 / 2.1
+// - Partner models: Claude Sonnet/Opus 5.5, Claude Sonnet/Opus 4.6, GPT-OSS 120B
 export const DEFAULT_MODEL_PRICING = {
+  // 0. Gemini 4 Neon series (OpenRouter google/gemini-4-neon, launched 2026-11-18)
+  'gemini-4-neon': { input: 3.00, output: 15.00, cached: 0.15 },
+  'gemini 4 neon': { input: 3.00, output: 15.00, cached: 0.15 },
+  'google/gemini-4-neon': { input: 3.00, output: 15.00, cached: 0.15 },
+
   // 1. Gemini 3.8 Flash series (OpenRouter google/gemini-3.8-flash)
   'gemini-3.8-flash': { input: 0.825, output: 4.125, cached: 0.0825 },
   'gemini 3.8 flash': { input: 0.825, output: 4.125, cached: 0.0825 },
@@ -127,6 +139,29 @@ export const DEFAULT_MODEL_PRICING = {
   'gemini 3.8 flash high': { input: 0.825, output: 4.125, cached: 0.0825 },
   'gemini-3.8-flash-tiered': { input: 0.825, output: 4.125, cached: 0.0825 },
   'gemini-3.8-flash-n': { input: 0.825, output: 4.125, cached: 0.0825 },
+  'google/gemini-3.8-flash': { input: 0.825, output: 4.125, cached: 0.0825 },
+
+  // 1b. Gemini 3.7 & 3.6 Flash series (Enterprise, OpenRouter google/gemini-3.7-flash & 3.6-flash)
+  'gemini-3.7-flash': { input: 0.75, output: 3.75, cached: 0.075 },
+  'gemini 3.7 flash': { input: 0.75, output: 3.75, cached: 0.075 },
+  'google/gemini-3.7-flash': { input: 0.75, output: 3.75, cached: 0.075 },
+  'gemini-3.6-flash': { input: 0.75, output: 3.75, cached: 0.075 },
+  'gemini 3.6 flash': { input: 0.75, output: 3.75, cached: 0.075 },
+  'google/gemini-3.6-flash': { input: 0.75, output: 3.75, cached: 0.075 },
+
+  // 1c. Gemini 3.1 Pro series (Enterprise, OpenRouter google/gemini-3.1-pro-preview)
+  'gemini-3.1-pro': { input: 2.00, output: 12.00, cached: 0.20 },
+  'gemini 3.1 pro': { input: 2.00, output: 12.00, cached: 0.20 },
+  'gemini-3.1-pro-preview': { input: 2.00, output: 12.00, cached: 0.20 },
+  'google/gemini-3.1-pro-preview': { input: 2.00, output: 12.00, cached: 0.20 },
+
+  // 1d. Nano Banana 2 / 2.1 (Generative image helper models on OpenRouter)
+  'gemini-nano-banana-2.1': { input: 1.50, output: 7.50, cached: 0 },
+  'nano banana 2.1': { input: 1.50, output: 7.50, cached: 0 },
+  'google/gemini-nano-banana-2.1': { input: 1.50, output: 7.50, cached: 0 },
+  'gemini-3.1-flash-image': { input: 0.50, output: 3.00, cached: 0 },
+  'nano banana 2': { input: 0.50, output: 3.00, cached: 0 },
+  'google/gemini-3.1-flash-image': { input: 0.50, output: 3.00, cached: 0 },
 
   // 2. Gemini 4 Argon series (OpenRouter google/gemini-4-argon)
   'gemini-4-argon': { input: 2.00, output: 10.00, cached: 0.10 },
@@ -148,18 +183,20 @@ export const DEFAULT_MODEL_PRICING = {
   'claude-sonnet-4-6': { input: 3.00, output: 15.00, cached: 0.30 },
   'claude sonnet 4.6': { input: 3.00, output: 15.00, cached: 0.30 },
   'claude sonnet 4.6 (thinking)': { input: 3.00, output: 15.00, cached: 0.30 },
+  'anthropic/claude-sonnet-4.6': { input: 3.00, output: 15.00, cached: 0.30 },
 
   // 6. Claude Opus 4.6 series (OpenRouter anthropic/claude-opus-4.6)
   'claude-opus-4.6': { input: 5.00, output: 25.00, cached: 0.50 },
   'claude-opus-4-6': { input: 5.00, output: 25.00, cached: 0.50 },
   'claude opus 4.6': { input: 5.00, output: 25.00, cached: 0.50 },
   'claude opus 4.6 (thinking)': { input: 5.00, output: 25.00, cached: 0.50 },
+  'anthropic/claude-opus-4.6': { input: 5.00, output: 25.00, cached: 0.50 },
 
   // 7. GPT-OSS 120B series (OpenRouter openai/gpt-oss-120b)
-  'gpt-oss-120b': { input: 0.028, output: 0.104, cached: 0.025 },
-  'gpt-oss 120b': { input: 0.028, output: 0.104, cached: 0.025 },
-  'gpt-oss 120b (medium)': { input: 0.028, output: 0.104, cached: 0.025 },
-  'openai/gpt-oss-120b': { input: 0.028, output: 0.104, cached: 0.025 },
+  'gpt-oss-120b': { input: 0.15, output: 0.60, cached: 0.075 },
+  'gpt-oss 120b': { input: 0.15, output: 0.60, cached: 0.075 },
+  'gpt-oss 120b (medium)': { input: 0.15, output: 0.60, cached: 0.075 },
+  'openai/gpt-oss-120b': { input: 0.15, output: 0.60, cached: 0.075 },
 
   // 8. Claude Sonnet 5.5 series (OpenRouter anthropic/claude-sonnet-5.5)
   'claude-sonnet-5.5': { input: 2.00, output: 10.00, cached: 0.10 },
@@ -167,13 +204,17 @@ export const DEFAULT_MODEL_PRICING = {
   'claude sonnet 5.5': { input: 2.00, output: 10.00, cached: 0.10 },
   'claude-sonnet-5-5-high': { input: 2.00, output: 10.00, cached: 0.10 },
   'claude sonnet 5.5 (high)': { input: 2.00, output: 10.00, cached: 0.10 },
+  'claude sonnet 5.5 (thinking)': { input: 2.00, output: 10.00, cached: 0.10 },
+  'anthropic/claude-sonnet-5.5': { input: 2.00, output: 10.00, cached: 0.10 },
 
   // 9. Claude Opus 5.5 series (OpenRouter anthropic/claude-opus-5.5)
   'claude-opus-5.5': { input: 4.00, output: 20.00, cached: 0.20 },
   'claude-opus-5-5': { input: 4.00, output: 20.00, cached: 0.20 },
   'claude opus 5.5': { input: 4.00, output: 20.00, cached: 0.20 },
   'claude-opus-5-5-high': { input: 4.00, output: 20.00, cached: 0.20 },
-  'claude opus 5.5 (high)': { input: 4.00, output: 20.00, cached: 0.20 }
+  'claude opus 5.5 (high)': { input: 4.00, output: 20.00, cached: 0.20 },
+  'claude opus 5.5 (thinking)': { input: 4.00, output: 20.00, cached: 0.20 },
+  'anthropic/claude-opus-5.5': { input: 4.00, output: 20.00, cached: 0.20 }
 };
 
 /**
@@ -195,6 +236,33 @@ export function getMergedPricingConfig() {
   return { ...DEFAULT_MODEL_PRICING, ...customRates };
 }
 
+function matchPricingFromTable(lower, table) {
+  if (!table || typeof table !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(table, lower)) return table[lower];
+  const keys = Object.keys(table).sort((a, b) => b.length - a.length);
+  for (const key of keys) {
+    if (lower.includes(key)) return table[key];
+  }
+  return null;
+}
+
+const HEURISTIC_PRICING_RULES = [
+  { match: l => l.includes('opus') && (l.includes('5.5') || l.includes('5-5')), rate: { input: 4.00, output: 20.00, cached: 0.20 } },
+  { match: l => l.includes('sonnet') && (l.includes('5.5') || l.includes('5-5')), rate: { input: 2.00, output: 10.00, cached: 0.10 } },
+  { match: l => l.includes('opus') && (l.includes('4.6') || l.includes('4-6')), rate: { input: 5.00, output: 25.00, cached: 0.50 } },
+  { match: l => l.includes('sonnet') && (l.includes('4.6') || l.includes('4-6')), rate: { input: 3.00, output: 15.00, cached: 0.30 } },
+  { match: l => l.includes('gpt-oss') && l.includes('120b'), rate: { input: 0.15, output: 0.60, cached: 0.075 } },
+  { match: l => l.includes('neon'), rate: { input: 3.00, output: 15.00, cached: 0.15 } },
+  { match: l => l.includes('carbon'), rate: { input: 2.00, output: 10.00, cached: 0.10 } },
+  { match: l => l.includes('hydrogen'), rate: { input: 1.50, output: 7.50, cached: 0.075 } },
+  { match: l => l.includes('argon'), rate: { input: 2.00, output: 10.00, cached: 0.10 } },
+  { match: l => l.includes('3.8') && l.includes('flash'), rate: { input: 0.825, output: 4.125, cached: 0.0825 } },
+  { match: l => (l.includes('3.7') || l.includes('3.6')) && l.includes('flash'), rate: { input: 0.75, output: 3.75, cached: 0.075 } },
+  { match: l => l.includes('3.1') && l.includes('pro'), rate: { input: 2.00, output: 12.00, cached: 0.20 } },
+  { match: l => l.includes('nano banana 2.1') || l.includes('nano-banana-2.1'), rate: { input: 1.50, output: 7.50, cached: 0 } },
+  { match: l => l.includes('nano banana 2') || l.includes('nano-banana-2'), rate: { input: 0.50, output: 3.00, cached: 0 } }
+];
+
 export function getModelPricing(modelName) {
   const lower = (modelName || '').toLowerCase().trim();
 
@@ -203,42 +271,24 @@ export function getModelPricing(modelName) {
     return null;
   }
 
-  const pricingTable = getMergedPricingConfig();
+  // 1. User custom rates take priority, then default pricing table (exact -> longest substring)
+  const merged = getMergedPricingConfig();
+  const customOnly = {};
+  for (const [k, p] of Object.entries(merged)) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_MODEL_PRICING, k) || DEFAULT_MODEL_PRICING[k] !== p) {
+      customOnly[k.toLowerCase().trim()] = p;
+    }
+  }
+  const customMatch = matchPricingFromTable(lower, customOnly);
+  if (customMatch) return customMatch;
 
-  // 1. Direct or partial match from pricing table
-  for (const [key, p] of Object.entries(pricingTable)) {
-    if (lower === key || lower.includes(key)) return p;
-  }
+  const defaultMatch = matchPricingFromTable(lower, DEFAULT_MODEL_PRICING);
+  if (defaultMatch) return defaultMatch;
 
-  // 2. Heuristic fallback rules for active model variants
-  if (lower.includes('opus') && (lower.includes('5.5') || lower.includes('5-5'))) {
-    return { input: 4.00, output: 20.00, cached: 0.20 };
+  // 2. Heuristic fallback rules for active model variants (including Orchestrator labels)
+  for (const rule of HEURISTIC_PRICING_RULES) {
+    if (rule.match(lower)) return rule.rate;
   }
-  if (lower.includes('sonnet') && (lower.includes('5.5') || lower.includes('5-5'))) {
-    return { input: 2.00, output: 10.00, cached: 0.10 };
-  }
-  if (lower.includes('opus') && (lower.includes('4.6') || lower.includes('4-6'))) {
-    return { input: 5.00, output: 25.00, cached: 0.50 };
-  }
-  if (lower.includes('sonnet') && (lower.includes('4.6') || lower.includes('4-6'))) {
-    return { input: 3.00, output: 15.00, cached: 0.30 };
-  }
-  if (lower.includes('gpt-oss') && lower.includes('120b')) {
-    return { input: 0.028, output: 0.104, cached: 0.025 };
-  }
-  if (lower.includes('carbon')) {
-    return { input: 2.00, output: 10.00, cached: 0.10 };
-  }
-  if (lower.includes('hydrogen')) {
-    return { input: 1.50, output: 7.50, cached: 0.075 };
-  }
-  if (lower.includes('argon')) {
-    return { input: 2.00, output: 10.00, cached: 0.10 };
-  }
-  if (lower.includes('3.8') && lower.includes('flash')) {
-    return { input: 0.825, output: 4.125, cached: 0.0825 };
-  }
-
   return null;
 }
 
@@ -401,7 +451,8 @@ export function scanNativeStatsJs() {
   const nowSec = Math.floor(Date.now() / 1000);
   const now = new Date();
   const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const start30Sec = Math.floor(new Date(todayDate.getTime() - 29 * 86400000).getTime() / 1000);
+  const d30Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+  const start30Sec = Math.floor(d30Start.getTime() / 1000);
   const maxAge = 7 * 24 * 3600;
 
   // Scan archive db if exists
@@ -653,9 +704,9 @@ export function scanNativeStatsJs() {
   const d7Tot = createTotals();
   const d30Tot = createTotals();
 
-  const yestDate = new Date(todayDate.getTime() - 86400000);
-  const d3Start = new Date(todayDate.getTime() - 2 * 86400000);
-  const d7Start = new Date(todayDate.getTime() - 6 * 86400000);
+  const yestDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const d3Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2);
+  const d7Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
 
   const dailyMap = new Map();
   const hourlyMap = new Map();
@@ -673,6 +724,7 @@ export function scanNativeStatsJs() {
     const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
     const hourStr = `${dateStr} ${pad(dt.getHours())}:00`;
     const eventDate = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    if (eventDate < d30Start || eventDate > todayDate) continue;
 
     addEvent(d30Tot, e);
 
@@ -799,7 +851,10 @@ export function scanNativeStatsPs1() {
  */
 export function runNativeStatsScan(force = false) {
   const now = Date.now();
-  if (!force && cachedNativeStats && (now - lastNativeScanMs < 30000)) {
+  const nowDate = new Date(now);
+  const pad = n => String(n).padStart(2, '0');
+  const todayKey = `${nowDate.getFullYear()}-${pad(nowDate.getMonth() + 1)}-${pad(nowDate.getDate())}`;
+  if (!force && cachedNativeStats && (now - lastNativeScanMs < 30000) && lastNativeScanDateKey === todayKey) {
     return cachedNativeStats;
   }
 
@@ -829,6 +884,7 @@ export function runNativeStatsScan(force = false) {
     if (result) {
       cachedNativeStats = result;
       lastNativeScanMs = Date.now();
+      lastNativeScanDateKey = todayKey;
       return result;
     }
   } catch (err) {
@@ -845,11 +901,14 @@ export function runNativeStatsScan(force = false) {
  * @returns {object} Aggregated local token usage data
  */
 export function analyzeGlobalTokens(range = 'today') {
+  const validRanges = new Set(['today', 'yesterday', '3d', '7d', '30d']);
+  if (!validRanges.has(range)) range = 'today';
+
   const raw = runNativeStatsScan() || {};
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const yesterday = new Date(now.getTime() - 86400000);
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const yesterdayStr = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`;
 
   let rangeLabel = '今天';
@@ -973,14 +1032,21 @@ export function analyzeGlobalTokens(range = 'today') {
       if (bTot > 0) defaultActiveIndex = h;
     }
   } else {
-    // Daily range
-    const dailyList = raw.daily || [];
-    let sliceDays = 30;
-    if (range === '3d') sliceDays = 3;
-    else if (range === '7d') sliceDays = 7;
-    const filteredDaily = dailyList.slice(-sliceDays);
+    // Daily range: always generate the exact calendar day window [today - (N-1) .. today]
+    const dailyByDate = new Map();
+    for (const d of (raw.daily || [])) {
+      if (d && d.date) dailyByDate.set(d.date, d);
+    }
+    const totalDays = range === '3d' ? 3 : (range === '7d' ? 7 : 30);
+    let latestActiveIndex = -1;
+    const filteredDaily = [];
+    for (let offset = totalDays - 1; offset >= 0; offset--) {
+      const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+      const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+      filteredDaily.push({ date: dateStr, ...(dailyByDate.get(dateStr) || {}) });
+    }
 
-    filteredDaily.forEach((d) => {
+    filteredDaily.forEach((d, idx) => {
       const dTot = Number(d.total_tokens || 0);
       const dInp = Number(d.input_tokens || 0);
       const dOut = Number(d.output_tokens || 0);
@@ -1005,8 +1071,9 @@ export function analyzeGlobalTokens(range = 'today') {
         cost: '$' + cost.toFixed(2),
         rawCost: Number(cost.toFixed(2))
       });
+      if (dTot > 0) latestActiveIndex = idx;
     });
-    defaultActiveIndex = Math.max(0, buckets.length - 1);
+    defaultActiveIndex = latestActiveIndex >= 0 ? latestActiveIndex : Math.max(0, buckets.length - 1);
   }
 
   const perf = raw.recent_performance;
@@ -1049,17 +1116,17 @@ export function analyzeGlobalTokens(range = 'today') {
       raw: totalCost
     },
     ttft: {
-      value: hasPerf ? `${perf.first_text_seconds.toFixed(2)} 秒` : '--',
+      value: hasPerf ? perf.first_text_seconds.toFixed(2) : '--',
       sub: hasPerf ? `最近 ${perf.sample_count} 次回复的中位数` : '暂无交互采样',
       raw: hasPerf ? perf.first_text_seconds : 0
     },
     speed: {
-      value: hasPerf ? `${perf.body_tokens_per_second.toFixed(1)} token/s` : '--',
+      value: hasPerf ? perf.body_tokens_per_second.toFixed(1) : '--',
       sub: hasPerf ? `最近 ${perf.sample_count} 次回复的中位数` : '暂无交互采样',
       raw: hasPerf ? perf.body_tokens_per_second : 0
     },
     avgInput: {
-      formatted: `${formatCompactNumber(avgInputTokens)} Token`,
+      formatted: formatCompactNumber(avgInputTokens),
       sub: `${totalRequests} 次请求，含缓存输入`,
       raw: avgInputTokens
     },
@@ -1352,9 +1419,11 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
 
   const toolStats = {};
   const timeline = [];
+  const compactions = [];
   const topConsumers = [];
 
   let currentContext = 0;
+  let pendingCompaction = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -1383,16 +1452,81 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
       }
     }
 
+    const isCompactionCheckpoint =
+      type === 'CHECKPOINT' ||
+      (type === 'SYSTEM_MESSAGE' && /Resuming from a compaction/i.test(content));
+
+    if (isCompactionCheckpoint) {
+      if (pendingCompaction) {
+        compactions.push({
+          index: compactions.length + 1,
+          step: pendingCompaction.step,
+          timestamp: pendingCompaction.timestamp,
+          before_turn: pendingCompaction.before_turn,
+          turn: null,
+          before_tokens: pendingCompaction.before_tokens,
+          after_tokens: null,
+          saved_tokens: null,
+          source: pendingCompaction.source
+        });
+      }
+      pendingCompaction = {
+        step: stepIndex,
+        timestamp: entry.created_at || null,
+        before_turn: totalModelTurns > 0 ? totalModelTurns : null,
+        before_tokens: currentContext > 0 ? currentContext : null,
+        source: type === 'CHECKPOINT' ? 'CHECKPOINT' : 'SYSTEM_MESSAGE'
+      };
+    }
+
     if (type === 'PLANNER_RESPONSE' && typeof entry.input_tokens === 'number') {
       totalModelTurns++;
       const inp = entry.input_tokens;
       const cch = entry.cache_read_tokens || 0;
       const out = entry.output_tokens || 0;
+      const prevContext = currentContext;
 
       totalInputTokens = inp;
       totalCacheReadTokens = cch;
       totalOutputTokens += out;
       currentContext = inp + cch;
+
+      let compactionEvent = null;
+      if (pendingCompaction) {
+        const beforeTok = pendingCompaction.before_tokens ?? (prevContext > 0 ? prevContext : null);
+        const savedTok = typeof beforeTok === 'number' ? Math.max(0, beforeTok - currentContext) : null;
+        compactionEvent = {
+          index: compactions.length + 1,
+          step: pendingCompaction.step,
+          timestamp: pendingCompaction.timestamp || entry.created_at || null,
+          before_turn: pendingCompaction.before_turn,
+          turn: totalModelTurns,
+          before_tokens: beforeTok,
+          after_tokens: currentContext,
+          saved_tokens: savedTok,
+          source: pendingCompaction.source
+        };
+        compactions.push(compactionEvent);
+        pendingCompaction = null;
+      } else if (
+        prevContext >= 40000 &&
+        currentContext > 0 &&
+        currentContext < prevContext * 0.65 &&
+        (prevContext - currentContext) >= 25000
+      ) {
+        compactionEvent = {
+          index: compactions.length + 1,
+          step: stepIndex,
+          timestamp: entry.created_at || null,
+          before_turn: totalModelTurns - 1,
+          turn: totalModelTurns,
+          before_tokens: prevContext,
+          after_tokens: currentContext,
+          saved_tokens: prevContext - currentContext,
+          source: 'TOKEN_DROP'
+        };
+        compactions.push(compactionEvent);
+      }
 
       timeline.push({
         step: stepIndex,
@@ -1401,7 +1535,8 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
         cache_tokens: cch,
         output_tokens: out,
         total_context: currentContext,
-        timestamp: entry.created_at || null
+        timestamp: entry.created_at || null,
+        ...(compactionEvent ? { compaction: compactionEvent } : {})
       });
     }
 
@@ -1466,6 +1601,21 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
         });
       }
     }
+  }
+
+  if (pendingCompaction) {
+    compactions.push({
+      index: compactions.length + 1,
+      step: pendingCompaction.step,
+      timestamp: pendingCompaction.timestamp,
+      before_turn: pendingCompaction.before_turn,
+      turn: null,
+      before_tokens: pendingCompaction.before_tokens,
+      after_tokens: null,
+      saved_tokens: null,
+      source: pendingCompaction.source
+    });
+    pendingCompaction = null;
   }
 
   if (currentContext === 0) {
@@ -1602,6 +1752,7 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
     toolStats,
     topConsumers: topConsumers.slice(0, 10),
     timeline,
+    compactions,
     recommendations
   };
 }
