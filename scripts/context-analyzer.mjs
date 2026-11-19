@@ -388,6 +388,17 @@ function getDuration(buf) {
   return (val > 0 && Number.isFinite(val)) ? val : null;
 }
 
+function isTextCompleteStep(status, payloadHex) {
+  if (Number(status) !== 3 || !payloadHex) return false;
+  const payBuf = Buffer.from(payloadHex, 'hex');
+  const resp = getBytesField(20, payBuf);
+  if (!resp) return false;
+  const stopReason = getVarintField(12, resp);
+  const textResp = getStringField(1, resp);
+  const toolCalls = getBytesField(7, resp);
+  return stopReason === 2 && Boolean(textResp) && !toolCalls;
+}
+
 /**
  * Executes a SQLite query using the system's sqlite3 CLI binary
  * @param {string} dbPath
@@ -536,7 +547,6 @@ export function scanNativeStatsJs() {
       const stepsRows = querySqlite(dbPath, stepsSql, 5000);
       for (const r of stepsRows) {
         let ts = null;
-        let textComplete = false;
         if (r.m) {
           const metaBuf = Buffer.from(r.m, 'hex');
           const f1 = getBytesField(1, metaBuf);
@@ -545,18 +555,7 @@ export function scanNativeStatsJs() {
             if (sec && sec > 0) ts = sec;
           }
         }
-        if (Number(r.status) === 3 && r.p) {
-          const payBuf = Buffer.from(r.p, 'hex');
-          const resp = getBytesField(20, payBuf);
-          if (resp) {
-            const stopReason = getVarintField(12, resp);
-            const textResp = getStringField(1, resp);
-            const toolCalls = getBytesField(7, resp);
-            if (stopReason === 2 && textResp && !toolCalls) {
-              textComplete = true;
-            }
-          }
-        }
+        const textComplete = isTextCompleteStep(r.status, r.p);
         stepRecords.push({ ts, textComplete });
       }
     } catch (e) {
@@ -1400,17 +1399,21 @@ function calcMedian(nums) {
 }
 
 function findConversationDbPath(conversationId) {
-  if (!conversationId) return null;
+  if (!conversationId || typeof conversationId !== 'string') return null;
+  const safeId = conversationId.trim();
+  // Reject path separators or traversal segments
+  if (!/^[a-zA-Z0-9_-]+$/.test(safeId)) return null;
+
   const geminiDir = path.join(os.homedir(), '.gemini');
   if (!fs.existsSync(geminiDir)) return null;
 
-  const primary = path.join(geminiDir, 'antigravity', 'conversations', `${conversationId}.db`);
+  const primary = path.join(geminiDir, 'antigravity', 'conversations', `${safeId}.db`);
   if (fs.existsSync(primary)) return primary;
 
   try {
     for (const d of fs.readdirSync(geminiDir)) {
       if (d.startsWith('antigravity') && d !== 'antigravity') {
-        const candidate = path.join(geminiDir, d, 'conversations', `${conversationId}.db`);
+        const candidate = path.join(geminiDir, d, 'conversations', `${safeId}.db`);
         if (fs.existsSync(candidate)) return candidate;
       }
     }
@@ -1435,12 +1438,29 @@ export function analyzeSessionPerformance(conversationId) {
     );
     if (!genRows || genRows.length === 0) return null;
 
+    // Align with global scanNativeStatsJs() by identifying finished text-only replies
+    let stepCompleteFlags = null;
+    try {
+      const stepRows = querySqlite(
+        dbPath,
+        'SELECT status, CASE WHEN length(step_payload) <= 1048576 THEN hex(step_payload) ELSE NULL END as p FROM steps WHERE step_type = 15 ORDER BY idx',
+        5000
+      );
+      if (Array.isArray(stepRows) && stepRows.length >= genRows.length) {
+        stepCompleteFlags = stepRows.map(r => isTextCompleteStep(r.status, r.p));
+      }
+    } catch {}
+
     const ttftValues = [];
-    const primaryBodySpeeds = [];
-    const fallbackBodySpeeds = [];
+    const completePrimaryBodySpeeds = [];
+    const completeFallbackBodySpeeds = [];
+    const allPrimaryBodySpeeds = [];
+    const allFallbackBodySpeeds = [];
     let latestTtft = null;
-    let latestPrimaryBodySpeed = null;
-    let latestFallbackBodySpeed = null;
+    let latestCompletePrimaryBodySpeed = null;
+    let latestCompleteFallbackBodySpeed = null;
+    let latestAllPrimaryBodySpeed = null;
+    let latestAllFallbackBodySpeed = null;
     let latestTotalSpeed = null;
     let latestTotalDuration = null;
 
@@ -1448,7 +1468,8 @@ export function analyzeSessionPerformance(conversationId) {
     let sumTotalDuration = 0;
     let durationTurnCount = 0;
 
-    for (const r of genRows) {
+    for (let ordinal = 0; ordinal < genRows.length; ordinal++) {
+      const r = genRows[ordinal];
       const blobSize = Number(r.len || 0);
       if (blobSize > 64 * 1024 * 1024 || !r.h) continue;
 
@@ -1456,6 +1477,7 @@ export function analyzeSessionPerformance(conversationId) {
       const wrapped = getBytesField(1, buf);
       if (!wrapped) continue;
 
+      const isComplete = stepCompleteFlags ? stepCompleteFlags[ordinal] : true;
       const usage = getBytesField(4, wrapped);
       const outputTokens = usage ? (getVarintField(3, usage) || 0) : 0;
       const bodyTokens = usage ? (getVarintField(10, usage) || 0) : 0;
@@ -1469,12 +1491,20 @@ export function analyzeSessionPerformance(conversationId) {
 
       if (bodyTokens >= 100 && streamSec && streamSec >= 1.0) {
         const spd = bodyTokens / streamSec;
-        primaryBodySpeeds.push(spd);
-        latestPrimaryBodySpeed = spd;
+        allPrimaryBodySpeeds.push(spd);
+        latestAllPrimaryBodySpeed = spd;
+        if (isComplete) {
+          completePrimaryBodySpeeds.push(spd);
+          latestCompletePrimaryBodySpeed = spd;
+        }
       } else if (bodyTokens >= 20 && streamSec && streamSec >= 0.2) {
         const spd = bodyTokens / streamSec;
-        fallbackBodySpeeds.push(spd);
-        latestFallbackBodySpeed = spd;
+        allFallbackBodySpeeds.push(spd);
+        latestAllFallbackBodySpeed = spd;
+        if (isComplete) {
+          completeFallbackBodySpeeds.push(spd);
+          latestCompleteFallbackBodySpeed = spd;
+        }
       }
 
       const turnDuration = (firstTextSec || 0) + (streamSec || 0);
@@ -1483,11 +1513,16 @@ export function analyzeSessionPerformance(conversationId) {
         sumTotalDuration += turnDuration;
         durationTurnCount++;
         latestTotalDuration = turnDuration;
-        if (outputTokens > 0) {
-          latestTotalSpeed = outputTokens / turnDuration;
-        }
+        latestTotalSpeed = outputTokens > 0 ? (outputTokens / turnDuration) : null;
       }
     }
+
+    const hasCompletePrimary = completePrimaryBodySpeeds.length > 0;
+    const hasCompleteFallback = completeFallbackBodySpeeds.length > 0;
+    const primaryBodySpeeds = (hasCompletePrimary || hasCompleteFallback) ? completePrimaryBodySpeeds : allPrimaryBodySpeeds;
+    const fallbackBodySpeeds = (hasCompletePrimary || hasCompleteFallback) ? completeFallbackBodySpeeds : allFallbackBodySpeeds;
+    const latestPrimaryBodySpeed = (hasCompletePrimary || hasCompleteFallback) ? latestCompletePrimaryBodySpeed : latestAllPrimaryBodySpeed;
+    const latestFallbackBodySpeed = (hasCompletePrimary || hasCompleteFallback) ? latestCompleteFallbackBodySpeed : latestAllFallbackBodySpeed;
 
     const useFallbackBody = primaryBodySpeeds.length === 0 && fallbackBodySpeeds.length > 0;
     const bodySpeedList = useFallbackBody ? fallbackBodySpeeds : primaryBodySpeeds;

@@ -416,28 +416,28 @@
         </div>
 
         <!-- Session Performance Grid (TTFT & Generation Speed) -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]" title="最近一轮首字延迟（含请求等待与思考起步），副标为本会话中位数">
-            <div class="text-[10px] text-[var(--muted-foreground)]">首字延迟 (TTFT)</div>
-            <div id="session-ttft" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">-- 秒</div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-2.5 text-xs">
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)] min-w-0" title="最近一轮首字延迟（含请求等待与思考起步），副标为本会话中位数">
+            <div class="text-[10px] text-[var(--muted-foreground)] truncate">首字延迟 <span class="normal-case">(秒)</span></div>
+            <div id="session-ttft" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5 truncate">--</div>
             <div id="session-ttft-sub" class="text-[10px] text-[var(--muted-foreground)] font-mono mt-0.5 truncate">暂无本地采样</div>
           </div>
 
-          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]" title="扣除首字等待后的正文流式吐字速度中位数（正文 Token ÷ 流式耗时）">
-            <div class="text-[10px] text-[var(--muted-foreground)]">正文生成速度</div>
-            <div id="session-body-speed" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">-- tok/s</div>
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)] min-w-0" title="扣除首字等待后的正文流式吐字速度中位数（正文 Token ÷ 流式耗时）">
+            <div class="text-[10px] text-[var(--muted-foreground)] truncate">正文速度 <span class="normal-case">(token/s)</span></div>
+            <div id="session-body-speed" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5 truncate">--</div>
             <div id="session-body-speed-sub" class="text-[10px] text-[var(--muted-foreground)] font-mono mt-0.5 truncate">暂无本地采样</div>
           </div>
 
-          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]" title="按总延迟计算的输出 Token 平均速度（总输出 Token ÷ 总耗时，含首字等待与思考）">
-            <div class="text-[10px] text-[var(--muted-foreground)]">总延迟生成速度</div>
-            <div id="session-total-speed" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">-- tok/s</div>
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)] min-w-0" title="按总延迟计算的输出 Token 平均速度（总输出 Token ÷ 总耗时，含首字等待与思考）">
+            <div class="text-[10px] text-[var(--muted-foreground)] truncate">总延迟速度 <span class="normal-case">(token/s)</span></div>
+            <div id="session-total-speed" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5 truncate">--</div>
             <div id="session-total-speed-sub" class="text-[10px] text-[var(--muted-foreground)] font-mono mt-0.5 truncate">含首字延迟均值</div>
           </div>
 
-          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)]" title="本会话全部模型请求从发起到流结束的累计耗时">
-            <div class="text-[10px] text-[var(--muted-foreground)]">累计交互耗时</div>
-            <div id="session-latency-total" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5">-- 秒</div>
+          <div class="bg-[var(--card-subtle)] p-2.5 rounded-lg border border-[var(--border)] min-w-0" title="本会话全部模型请求从发起到流结束的累计耗时">
+            <div class="text-[10px] text-[var(--muted-foreground)] truncate">累计交互耗时</div>
+            <div id="session-latency-total" class="text-sm sm:text-base font-bold font-mono text-[var(--foreground)] mt-0.5 truncate">--</div>
             <div id="session-latency-sub" class="text-[10px] text-[var(--muted-foreground)] font-mono mt-0.5 truncate">等待本地统计</div>
           </div>
         </div>
@@ -1337,10 +1337,11 @@
     }
 
     function formatLatencyDuration(seconds) {
-      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '-- 秒';
-      if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
-      const mins = Math.floor(seconds / 60);
-      const secs = Math.round(seconds % 60);
+      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '--';
+      if (seconds < 59.95) return `${seconds.toFixed(1)} 秒`;
+      const totalWhole = Math.round(seconds);
+      const mins = Math.floor(totalWhole / 60);
+      const secs = totalWhole % 60;
       return `${mins}分${String(secs).padStart(2, '0')}秒`;
     }
 
@@ -1356,44 +1357,44 @@
       if (!ttftEl || !bodySpdEl || !totalSpdEl || !latEl) return;
 
       if (!perf) {
-        ttftEl.textContent = '-- 秒';
+        ttftEl.textContent = '--';
         ttftSubEl.textContent = '暂无本地采样';
-        bodySpdEl.textContent = '-- tok/s';
+        bodySpdEl.textContent = '--';
         bodySpdSubEl.textContent = '暂无本地采样';
-        totalSpdEl.textContent = '-- tok/s';
+        totalSpdEl.textContent = '--';
         totalSpdSubEl.textContent = '含首字延迟均值';
-        latEl.textContent = '-- 秒';
+        latEl.textContent = '--';
         latSubEl.textContent = '等待本地统计';
         return;
       }
 
       if (perf.ttft && typeof perf.ttft.latest === 'number') {
-        ttftEl.textContent = `${perf.ttft.latest.toFixed(2)} 秒`;
+        ttftEl.textContent = perf.ttft.latest.toFixed(2);
         ttftSubEl.textContent = perf.ttft.sampleCount > 1 && typeof perf.ttft.median === 'number'
           ? `中位 ${perf.ttft.median.toFixed(2)}s · ${perf.ttft.sampleCount} 轮`
           : `最近 ${perf.ttft.sampleCount} 轮采样`;
       } else {
-        ttftEl.textContent = '-- 秒';
+        ttftEl.textContent = '--';
         ttftSubEl.textContent = '暂无首字采样';
       }
 
       if (perf.bodySpeed && typeof perf.bodySpeed.median === 'number') {
-        bodySpdEl.textContent = `${perf.bodySpeed.median.toFixed(1)} tok/s`;
+        bodySpdEl.textContent = perf.bodySpeed.median.toFixed(1);
         const latestStr = typeof perf.bodySpeed.latest === 'number' ? `最新 ${perf.bodySpeed.latest.toFixed(1)} · ` : '';
         const tagStr = perf.bodySpeed.isShortFallback ? '短回复' : '长回复';
         bodySpdSubEl.textContent = `${latestStr}${perf.bodySpeed.sampleCount} 轮${tagStr}`;
       } else {
-        bodySpdEl.textContent = '-- tok/s';
+        bodySpdEl.textContent = '--';
         bodySpdSubEl.textContent = '暂无有效正文流';
       }
 
       if (perf.totalSpeed && typeof perf.totalSpeed.avg === 'number') {
-        totalSpdEl.textContent = `${perf.totalSpeed.avg.toFixed(1)} tok/s`;
+        totalSpdEl.textContent = perf.totalSpeed.avg.toFixed(1);
         totalSpdSubEl.textContent = typeof perf.totalSpeed.latest === 'number'
           ? `最新 ${perf.totalSpeed.latest.toFixed(1)} · 含首字`
           : `含首字延迟 (${perf.totalSpeed.sampleCount} 轮)`;
       } else {
-        totalSpdEl.textContent = '-- tok/s';
+        totalSpdEl.textContent = '--';
         totalSpdSubEl.textContent = '含首字延迟均值';
       }
 
@@ -1403,7 +1404,7 @@
           ? `均轮 ${perf.latency.avgSeconds.toFixed(1)}s · 共 ${perf.latency.sampleCount} 轮`
           : `共 ${perf.latency.sampleCount} 轮`;
       } else {
-        latEl.textContent = '-- 秒';
+        latEl.textContent = '--';
         latSubEl.textContent = '等待本地统计';
       }
     }
