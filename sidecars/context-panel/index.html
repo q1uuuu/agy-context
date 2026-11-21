@@ -478,8 +478,8 @@
 
       <!-- Session Timeline SubTab -->
       <div id="subtab-timeline" class="hidden space-y-3">
-        <!-- Top Stats Summary Island (4 KPI Cards) -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <!-- Top Stats Summary Island (3 KPI Cards) -->
+        <div class="grid grid-cols-3 gap-2">
           <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5 min-w-0">
             <div class="text-[10px] text-[var(--muted-foreground)] truncate">初始上下文 (T1)</div>
             <div id="tl-stat-init" class="text-sm font-bold font-mono text-[var(--foreground)] truncate">--</div>
@@ -490,15 +490,8 @@
             <div id="tl-stat-curr" class="text-sm font-bold font-mono text-[var(--foreground)] truncate">--</div>
             <div id="tl-stat-curr-sub" class="text-[9px] text-[var(--muted-foreground)] truncate">第 -- 轮</div>
           </div>
-          <div id="tl-kpi-peak" class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5 min-w-0 transition-colors cursor-default hover:border-[var(--primary)]/50" title="悬停可在下方曲线中定位历史峰值">
-            <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] truncate">
-              <span class="truncate">历史峰值上下文</span>
-            </div>
-            <div id="tl-stat-peak" class="text-sm font-bold font-mono text-[var(--foreground)] truncate">--</div>
-            <div id="tl-stat-peak-sub" class="text-[9px] text-[var(--muted-foreground)] truncate">出现在第 -- 轮</div>
-          </div>
           <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 shadow-sm space-y-0.5 min-w-0">
-            <div class="text-[10px] text-[var(--muted-foreground)] truncate">平均每轮增速</div>
+            <div class="text-[10px] text-[var(--muted-foreground)] truncate">平均每轮增速 <span class="normal-case">(/轮)</span></div>
             <div id="tl-stat-rate" class="text-sm font-bold font-mono text-[var(--foreground)] truncate">--</div>
             <div class="text-[9px] text-[var(--muted-foreground)] truncate">净增 / 交互轮次</div>
           </div>
@@ -586,7 +579,7 @@
 
           <div class="flex flex-wrap items-center justify-between gap-1 text-[10px] text-[var(--muted-foreground)] px-0.5">
             <span class="font-mono">纵轴：Tokens (K/M) · 横轴：交互轮次</span>
-            <span class="font-mono opacity-80">悬停曲线或峰值卡片查看详情</span>
+            <span class="font-mono opacity-80">悬停曲线查看详情</span>
           </div>
         </div>
       </div>
@@ -623,14 +616,13 @@
             <button onclick="setRange('30d')" id="range-30d" class="range-btn px-2 sm:px-2.5 py-0.5 rounded-md text-[11px] transition whitespace-nowrap">近 30 天</button>
           </div>
         </div>
-        <div id="range-summary-pill" class="text-[10px] text-[var(--muted-foreground)] font-mono shrink-0">今天本地记录汇总</div>
       </div>
 
       <!-- 8-Card Metric Grid (Clean monochrome, no emojis) -->
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-2.5">
         <!-- 1. Total Token -->
         <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2.5 sm:p-3 shadow-sm space-y-0.5 min-w-0">
-          <div id="lbl-total-tokens" class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] truncate">今天总 Token</div>
+          <div id="lbl-total-tokens" class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] truncate">总 Token</div>
           <div id="val-total-compact" class="text-base sm:text-xl font-bold font-mono text-[var(--foreground)] mt-0.5 truncate">--</div>
           <div id="val-total-full" class="text-[10px] text-[var(--muted-foreground)] font-mono truncate">-- Token</div>
         </div>
@@ -692,8 +684,7 @@
         <div class="flex flex-wrap items-start justify-between gap-3 pb-2.5 border-b border-[var(--border)]">
           <!-- Left title -->
           <div>
-            <div id="chart-range-title" class="text-xs sm:text-sm font-bold text-[var(--foreground)]">今天</div>
-            <div class="text-[10px] text-[var(--muted-foreground)]">本地生成记录汇总</div>
+            <div class="text-xs sm:text-sm font-bold text-[var(--foreground)]">本地生成记录汇总</div>
           </div>
 
           <!-- Right interactive stats card (Monochrome styling) -->
@@ -734,7 +725,7 @@
         <div class="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[var(--border)]">
           <div class="min-w-0">
             <div class="text-xs sm:text-sm font-bold text-[var(--foreground)]">模型分布</div>
-            <div id="model-view-subtitle" class="text-[10px] text-[var(--muted-foreground)]">今天本地记录</div>
+            <div id="model-view-subtitle" class="hidden text-[10px] text-[var(--muted-foreground)]"></div>
           </div>
 
           <!-- Switch Pills: Token 用量 vs 预估费用 -->
@@ -852,35 +843,41 @@
       fetchGlobalTokens();
     }
 
+    function updateModelViewSubtitle(data) {
+      const subTitle = document.getElementById('model-view-subtitle');
+      if (!subTitle) return;
+      if (currentModelTab === 'tokens') {
+        subTitle.classList.add('hidden');
+        subTitle.textContent = '';
+      } else {
+        subTitle.classList.remove('hidden');
+        if (data && data.unpricedCount > 0) {
+          subTitle.textContent = `${data.unpricedCount} 个模型未计价，未计入费用估算`;
+        } else {
+          subTitle.textContent = '全模型已计费';
+        }
+      }
+    }
+
     function switchModelDistributionTab(tab) {
       currentModelTab = tab;
       const btnTokens = document.getElementById('btn-model-tokens');
       const btnCost = document.getElementById('btn-model-cost');
       const tabTokens = document.getElementById('tab-model-tokens');
       const tabCost = document.getElementById('tab-model-cost');
-      const subTitle = document.getElementById('model-view-subtitle');
 
       if (tab === 'tokens') {
         btnTokens.className = 'px-2.5 py-0.5 rounded-md font-medium bg-[var(--onyx-key)] text-[var(--foreground)] shadow-[var(--onyx-key-shadow)] transition';
         btnCost.className = 'px-2.5 py-0.5 rounded-md font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition flex items-center gap-1';
         tabTokens.classList.remove('hidden');
         tabCost.classList.add('hidden');
-        if (globalDataCache) {
-          subTitle.textContent = `${globalDataCache.rangeLabel}本地记录`;
-        }
       } else {
         btnCost.className = 'px-2.5 py-0.5 rounded-md font-medium bg-[var(--onyx-key)] text-[var(--foreground)] shadow-[var(--onyx-key-shadow)] transition flex items-center gap-1';
         btnTokens.className = 'px-2.5 py-0.5 rounded-md font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition';
         tabTokens.classList.add('hidden');
         tabCost.classList.remove('hidden');
-        if (globalDataCache) {
-          if (globalDataCache.unpricedCount > 0) {
-            subTitle.textContent = `${globalDataCache.unpricedCount} 个模型未计价，未计入费用估算`;
-          } else {
-            subTitle.textContent = '全模型已计费';
-          }
-        }
       }
+      updateModelViewSubtitle(globalDataCache);
     }
 
     function refreshCurrentView() {
@@ -921,9 +918,6 @@
       if (scanEl && currentMainView === 'global') {
         scanEl.textContent = `已扫描 ${data.scanTime} · 最新记录 ${data.latestRecordTime}`;
       }
-      document.getElementById('lbl-total-tokens').textContent = `${data.rangeLabel}总 Token`;
-      document.getElementById('range-summary-pill').textContent = `${data.rangeLabel}本地记录汇总`;
-      document.getElementById('chart-range-title').textContent = data.rangeLabel;
 
       document.getElementById('val-total-compact').textContent = data.totalTokens.compact;
       document.getElementById('val-total-full').textContent = data.totalTokens.full;
@@ -1046,16 +1040,7 @@
     // ==========================================
     function renderModelViews(data) {
       const models = data.models || [];
-      const subTitle = document.getElementById('model-view-subtitle');
-      if (currentModelTab === 'tokens') {
-        subTitle.textContent = `${data.rangeLabel}本地记录`;
-      } else {
-        if (data.unpricedCount > 0) {
-          subTitle.textContent = `${data.unpricedCount} 个模型未计价，未计入费用估算`;
-        } else {
-          subTitle.textContent = '全模型已计费';
-        }
-      }
+      updateModelViewSubtitle(data);
 
       // Tab 1: Token Usage horizontal progress bars (Proportional to total token volume)
       const tabTokens = document.getElementById('tab-model-tokens');
@@ -1338,11 +1323,11 @@
 
     function formatLatencyDuration(seconds) {
       if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '--';
-      if (seconds < 59.95) return `${seconds.toFixed(1)} 秒`;
+      if (seconds < 59.95) return `${seconds.toFixed(1)}″`;
       const totalWhole = Math.round(seconds);
       const mins = Math.floor(totalWhole / 60);
       const secs = totalWhole % 60;
-      return `${mins}分${String(secs).padStart(2, '0')}秒`;
+      return `${mins}′${String(secs).padStart(2, '0')}″`;
     }
 
     function renderSessionPerformance(perf) {
@@ -1401,7 +1386,7 @@
       if (perf.latency && typeof perf.latency.totalSeconds === 'number') {
         latEl.textContent = formatLatencyDuration(perf.latency.totalSeconds);
         latSubEl.textContent = typeof perf.latency.avgSeconds === 'number'
-          ? `均轮 ${perf.latency.avgSeconds.toFixed(1)}s · 共 ${perf.latency.sampleCount} 轮`
+          ? `均轮 ${perf.latency.avgSeconds.toFixed(1)}″ · 共 ${perf.latency.sampleCount} 轮`
           : `共 ${perf.latency.sampleCount} 轮`;
       } else {
         latEl.textContent = '--';
@@ -1763,7 +1748,7 @@
       setTxt('tl-stat-peak', peakPt.total_context.toLocaleString());
       const peakTimeShort = formatLocalTimestamp(peakPt.timestamp, 'short');
       setTxt('tl-stat-peak-sub', peakTimeShort ? `第 ${peakPt.turn} 轮 · ${peakTimeShort}` : `出现在第 ${peakPt.turn} 轮`);
-      setTxt('tl-stat-rate', `${avgGrowth >= 0 ? '+' : ''}${avgGrowth.toLocaleString()} / 轮`);
+      setTxt('tl-stat-rate', `${avgGrowth >= 0 ? '+' : ''}${avgGrowth.toLocaleString()}`);
       setTxt('tl-turns-badge', `共 ${points.length} 轮`);
 
       // Dynamic crisp pixel viewBox (eliminates aspect-ratio stretching of dots & text)
