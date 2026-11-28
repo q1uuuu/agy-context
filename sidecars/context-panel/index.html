@@ -503,6 +503,12 @@
       </div>
 
       <div class="flex items-center space-x-2 shrink-0">
+        <!-- Multi-Task Monitor Quick Pill (Native click-to-jump via sidecar.ui.toggleConversation) -->
+        <button id="header-tasks-pill" type="button" onclick="toggleTasksPopover(event)" class="px-2 py-1 text-xs rounded-lg border border-[var(--border)] bg-[var(--onyx-key)] hover:bg-[var(--card-hover)] text-[var(--foreground)] font-mono flex items-center gap-1.5 shadow-[var(--onyx-key-shadow)] transition select-none active:scale-95 whitespace-nowrap" title="正在运行的任务与已完成未读会话">
+          <span id="header-tasks-dot" class="w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--muted-foreground)] opacity-60"></span>
+          <span id="header-tasks-label" class="text-[11px]">任务 0</span>
+        </button>
+
         <!-- Active Account & Dual Quota Pill (Hover/Click opens #account-popover) -->
         <button id="header-account-pill" onclick="toggleAccountPopover()" class="hidden px-2.5 py-1 text-xs rounded-lg border border-[var(--border)] bg-[var(--onyx-key)] hover:bg-[var(--card-hover)] text-[var(--foreground)] font-mono flex items-center gap-1.5 shadow-[var(--onyx-key-shadow)] transition select-none active:scale-95 whitespace-nowrap max-w-[255px]">
           <span id="header-account-dot" class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: var(--status-ok);"></span>
@@ -4299,6 +4305,151 @@
     }
 
     // ==========================================
+    // Multi-Task Monitor Quick Popover (Native Jump)
+    // ==========================================
+    let cachedSidecarTasks = null;
+    let tasksCloseTimer = null;
+
+    async function fetchSidecarTasks() {
+      try {
+        const fetchFn = (window.sidecar && window.sidecar.fetch) ? window.sidecar.fetch : fetch;
+        const res = await fetchFn('/api/tasks');
+        if (!res.ok) return;
+        cachedSidecarTasks = await res.json();
+        renderSidecarTasksUI();
+      } catch {}
+    }
+
+    function renderSidecarTasksUI() {
+      const data = cachedSidecarTasks;
+      if (!data) return;
+
+      const dot = document.getElementById('header-tasks-dot');
+      const lbl = document.getElementById('header-tasks-label');
+      const badge = document.getElementById('tasks-pop-counts');
+      const list = document.getElementById('tasks-pop-list');
+
+      const running = data.running || [];
+      const unread = data.unread || [];
+      const total = running.length + unread.length;
+
+      lbl.textContent = total > 0 ? `任务 ${total}` : '任务 0';
+      if (running.length > 0) {
+        dot.style.backgroundColor = 'var(--status-ok)';
+        dot.classList.remove('opacity-60');
+        dot.classList.add('animate-pulse');
+      } else if (unread.length > 0) {
+        dot.style.backgroundColor = 'var(--status-warn)';
+        dot.classList.remove('opacity-60', 'animate-pulse');
+      } else {
+        dot.style.backgroundColor = 'var(--muted-foreground)';
+        dot.classList.add('opacity-60');
+        dot.classList.remove('animate-pulse');
+      }
+      badge.textContent = `运行 ${running.length} · 未读 ${unread.length}`;
+
+      if (total === 0) {
+        list.innerHTML = '<div class="text-xs text-[var(--muted-foreground)] py-4 text-center font-mono">当前没有运行中或未读的会话</div>';
+        return;
+      }
+
+      const renderRow = (t, isRun) => {
+        const p = t.progress || {};
+        const stepBadge = p.stepsTotal > 0 ? `${p.stepsDone}/${p.stepsTotal}` : `${t.stepCount || 0} steps`;
+        const focusText = p.focus || p.latestActivity || t.summary || '';
+        const safeId = escapeHtml(t.id);
+        return `
+          <div class="bg-[var(--card-subtle)] border border-[var(--border)] rounded-xl p-2.5 space-y-1.5 hover:bg-[var(--card-hover)] transition">
+            <div class="flex items-start justify-between gap-2">
+              <button type="button" data-task-jump="${safeId}" class="text-left text-xs font-semibold text-[var(--foreground)] hover:underline truncate flex-1 cursor-pointer">
+                ${escapeHtml(t.title)}
+              </button>
+              <span class="px-1.5 py-0.2 rounded text-[10px] font-mono border shrink-0 ${isRun ? 'status-ok-badge' : 'status-warn-badge'}">${isRun ? '运行中' : '未读'}</span>
+            </div>
+            ${focusText ? `<div class="text-[11px] text-[var(--muted-foreground)] truncate">${escapeHtml(focusText)}</div>` : ''}
+            <div class="flex items-center justify-between gap-2 text-[10px] font-mono text-[var(--muted-foreground)]">
+              <span class="truncate">${t.workspaceName ? `${escapeHtml(t.workspaceName)} · ` : ''}${escapeHtml(stepBadge)}</span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                ${!isRun ? `<button type="button" data-task-read="${safeId}" data-update-ms="${Number(t.updateTimeMs) || 0}" class="px-1.5 py-0.5 rounded border border-[var(--border)] hover:text-[var(--foreground)] cursor-pointer">已读</button>` : ''}
+                <button type="button" data-task-jump="${safeId}" class="px-1.5 py-0.5 rounded bg-[var(--primary)] text-[var(--primary-foreground)] cursor-pointer">跳转</button>
+              </div>
+            </div>
+          </div>
+        `;
+      };
+
+      list.innerHTML = [
+        ...running.map(t => renderRow(t, true)),
+        ...unread.map(t => renderRow(t, false))
+      ].join('');
+    }
+
+    function positionTasksPopover() {
+      const pop = document.getElementById('tasks-popover');
+      const trigger = document.getElementById('header-tasks-pill');
+      if (pop.classList.contains('hidden')) return;
+      const rect = trigger.getBoundingClientRect();
+      const popW = Math.min(350, window.innerWidth - 16);
+      const left = Math.max(8, Math.min(window.innerWidth - popW - 8, rect.right - popW));
+      pop.style.left = `${Math.round(left)}px`;
+      pop.style.top = `${Math.round(rect.bottom + 8)}px`;
+    }
+
+    function toggleTasksPopover(e) {
+      if (e) e.stopPropagation();
+      const pop = document.getElementById('tasks-popover');
+      if (!pop.classList.contains('hidden') && !pop.classList.contains('opacity-0')) {
+        closeTasksPopover();
+        return;
+      }
+      if (tasksCloseTimer) {
+        clearTimeout(tasksCloseTimer);
+        tasksCloseTimer = null;
+      }
+      closeAccountPopover(true);
+      closeUpdateModal();
+      closeCustomCalendarPopover();
+      pop.classList.remove('hidden', 'pointer-events-none');
+      positionTasksPopover();
+      fetchSidecarTasks();
+      requestAnimationFrame(() => {
+        positionTasksPopover();
+        pop.classList.remove('opacity-0', '-translate-y-1');
+      });
+    }
+
+    function closeTasksPopover() {
+      const pop = document.getElementById('tasks-popover');
+      if (pop.classList.contains('hidden')) return;
+      if (tasksCloseTimer) clearTimeout(tasksCloseTimer);
+      pop.classList.add('pointer-events-none', 'opacity-0', '-translate-y-1');
+      tasksCloseTimer = setTimeout(() => {
+        pop.classList.add('hidden');
+        tasksCloseTimer = null;
+      }, 150);
+    }
+
+    function jumpSidecarConversation(convId) {
+      if (!convId) return;
+      if (window.sidecar && window.sidecar.ui && typeof window.sidecar.ui.toggleConversation === 'function') {
+        window.sidecar.ui.toggleConversation(convId);
+        closeTasksPopover();
+      }
+    }
+
+    async function markSidecarTaskRead(convId, updateTimeMs) {
+      try {
+        const fetchFn = (window.sidecar && window.sidecar.fetch) ? window.sidecar.fetch : fetch;
+        await fetchFn('/api/tasks/read', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: convId, updateTimeMs })
+        });
+        await fetchSidecarTasks();
+      } catch {}
+    }
+
+    // ==========================================
     // Metric Card (i) Hover Floating Tooltip
     // ==========================================
     let activeMetricTipBtn = null;
@@ -4385,12 +4536,38 @@
 
       const updatePop = document.getElementById('update-modal');
       const versionBtn = document.getElementById('version-btn');
+      const tasksPop = document.getElementById('tasks-popover');
+      const tasksBtn = document.getElementById('header-tasks-pill');
       if (updatePop) {
         updatePop.addEventListener('click', (e) => e.stopPropagation());
       }
+      if (tasksPop) {
+        tasksPop.addEventListener('click', (e) => e.stopPropagation());
+      }
+      const tasksListEl = document.getElementById('tasks-pop-list');
+      tasksListEl.addEventListener('click', (e) => {
+        const readBtn = e.target.closest('[data-task-read]');
+        if (readBtn) {
+          e.stopPropagation();
+          markSidecarTaskRead(readBtn.dataset.taskRead, Number(readBtn.dataset.updateMs) || 0);
+          return;
+        }
+        const jumpBtn = e.target.closest('[data-task-jump]');
+        if (jumpBtn) {
+          e.stopPropagation();
+          jumpSidecarConversation(jumpBtn.dataset.taskJump);
+        }
+      });
 
       document.addEventListener('click', (e) => {
         const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+        if (tasksPop && !tasksPop.classList.contains('hidden')) {
+          const inTasks = tasksPop.contains(e.target) || path.includes(tasksPop);
+          const inTasksBtn = tasksBtn && (tasksBtn.contains(e.target) || path.includes(tasksBtn));
+          if (!inTasks && !inTasksBtn) {
+            closeTasksPopover();
+          }
+        }
         if (acctPop && !acctPop.classList.contains('hidden')) {
           const inAcct = acctPop.contains(e.target) || path.includes(acctPop);
           const inPill = headerPill && (headerPill.contains(e.target) || path.includes(headerPill));
@@ -4509,10 +4686,12 @@
       fetchSessionContext();
       fetchUpdateStatus(false);
       fetchUnlockStatus();
+      fetchSidecarTasks();
       fetchAccountQuota(false).then(() => fetchAccountsList());
       setInterval(() => {
         if (document.hidden) return;
         refreshCurrentView();
+        fetchSidecarTasks();
       }, 15000);
       setInterval(() => {
         if (document.hidden) return;
@@ -4711,6 +4890,20 @@
       <button type="button" onclick="applyQuickCalendarPreset('3d')" class="px-2 py-0.5 rounded-md text-[10px] font-mono bg-[var(--onyx-well)] border border-[var(--border-subtle)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--card-hover)] transition cursor-pointer">近 3 天</button>
       <button type="button" onclick="applyQuickCalendarPreset('14d')" class="px-2 py-0.5 rounded-md text-[10px] font-mono bg-[var(--onyx-well)] border border-[var(--border-subtle)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--card-hover)] transition cursor-pointer">近 14 天</button>
       <button type="button" onclick="applyQuickCalendarPreset('month')" class="px-2 py-0.5 rounded-md text-[10px] font-mono bg-[var(--onyx-well)] border border-[var(--border-subtle)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--card-hover)] transition cursor-pointer">本月</button>
+    </div>
+  </div>
+
+  <!-- Multi-Task Monitor Popover (Native Jump via sidecar.ui.toggleConversation) -->
+  <div id="tasks-popover" class="fixed z-50 w-[min(350px,calc(100vw-16px))] max-h-[calc(100dvh-56px)] bg-[var(--card)] border border-[var(--border)] rounded-2xl shadow-2xl flex flex-col overflow-hidden hidden pointer-events-none opacity-0 -translate-y-1 transition-all duration-150">
+    <div class="shrink-0 flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-[var(--border)]">
+      <div class="min-w-0">
+        <h3 class="text-xs font-semibold text-[var(--foreground)] truncate">多任务快捷跳转</h3>
+        <p id="tasks-pop-counts" class="text-[10px] font-mono text-[var(--muted-foreground)] truncate">运行 0 · 未读 0</p>
+      </div>
+      <button type="button" onclick="fetchSidecarTasks()" class="px-2 py-0.5 text-[10px] font-mono rounded-md border border-[var(--border)] bg-[var(--onyx-key)] hover:bg-[var(--card-hover)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] cursor-pointer">刷新</button>
+    </div>
+    <div id="tasks-pop-list" class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
+      <div class="text-xs text-[var(--muted-foreground)] py-4 text-center font-mono">加载中...</div>
     </div>
   </div>
 

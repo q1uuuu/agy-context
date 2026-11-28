@@ -190,7 +190,7 @@ Write-Host "  Installation Completed Successfully!                           " -
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "How to Open & View:" -ForegroundColor White
-Write-Host "  1. Click the top-right '...' menu -> 'Extensions >' -> 'Context Usage'" -ForegroundColor Cyan
-Write-Host "  2. Or click the in-chat link: [Open Context Inspector](sidecar://agy-context/context-panel/)" -ForegroundColor Cyan
-Write-Host "  3. Running continuously in background sidecar." -ForegroundColor Cyan
+Write-Host "  1. Full-Screen Dashboard: Left Sidebar -> 'Plugins' -> 'Context Inspector'" -ForegroundColor Cyan
+Write-Host "  2. Right Side Panel: Top-right '...' menu -> 'Extensions >' -> 'Context Usage'" -ForegroundColor Cyan
+Write-Host "  3. Or click the in-chat link: [Open Context Inspector](sidecar://agy-context/context-panel/)" -ForegroundColor Cyan
 Write-Host ""

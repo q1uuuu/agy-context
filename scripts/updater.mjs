@@ -313,7 +313,7 @@ function copyDirSync(src, dest) {
 /**
  * Restarts the Sidecar service via Antigravity Connect-RPC or detached process spawn
  */
-export async function restartSidecarService() {
+export async function restartSidecarService({ allowSelfRespawn = true } = {}) {
   const auth = await getLanguageServerAuth(true);
   const candidates = auth?.candidates?.length
     ? auth.candidates
@@ -360,9 +360,15 @@ export async function restartSidecarService() {
     } catch {}
   }
 
-  // Fallback: spawn background process and exit self
+  // Fallback: only respawn & exit when running inside the Sidecar server process itself
+  const serverScript = path.join(PLUGIN_ROOT, 'sidecars', 'context-panel', 'server.mjs');
+  const normPath = (p) => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+  const isSidecarProcess = normPath(process.argv[1] || '') === normPath(serverScript);
+  if (!allowSelfRespawn || !isSidecarProcess) {
+    return false;
+  }
+
   try {
-    const serverScript = path.join(PLUGIN_ROOT, 'sidecars', 'context-panel', 'server.mjs');
     const child = cp.spawn(process.execPath, [serverScript], {
       detached: true,
       stdio: 'ignore',
@@ -383,9 +389,10 @@ export async function restartSidecarService() {
 /**
  * Executes a full atomic one-click update workflow
  * @param {Function} [onProgress]
+ * @param {{ allowSelfRespawn?: boolean }} [options]
  * @returns {Promise<{success: boolean, message: string, oldVersion: string, newVersion: string}>}
  */
-export async function applyOneClickUpdate(onProgress = () => {}) {
+export async function applyOneClickUpdate(onProgress = () => {}, { allowSelfRespawn = true } = {}) {
   const currentVersion = getLocalVersion();
   const updateInfo = await checkForUpdates();
 
@@ -451,7 +458,7 @@ export async function applyOneClickUpdate(onProgress = () => {}) {
   // 3. Backup current files
   onProgress({ stage: 'installing', percent: 80, message: '备份当前版本并原子覆写...' });
   fs.mkdirSync(backupDir, { recursive: true });
-  const criticalItems = ['scripts', 'sidecars', 'assets', 'plugin.json', 'install.sh', 'install.ps1', 'uninstall.sh', 'uninstall.ps1', 'README.md'];
+  const criticalItems = ['scripts', 'sidecars', 'mcp-app', 'assets', 'plugin.json', 'mcp_config.json', 'install.sh', 'install.ps1', 'uninstall.sh', 'uninstall.ps1', 'README.md'];
   for (const item of criticalItems) {
     const src = path.join(PLUGIN_ROOT, item);
     if (fs.existsSync(src)) {
@@ -498,7 +505,7 @@ export async function applyOneClickUpdate(onProgress = () => {}) {
   // 5. Trigger Restart
   onProgress({ stage: 'restarting', percent: 95, message: '正在热重载后台服务...' });
   setTimeout(() => {
-    restartSidecarService().catch(() => {});
+    restartSidecarService({ allowSelfRespawn }).catch(() => {});
   }, 800);
 
   return {

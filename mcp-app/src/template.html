@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Antigravity Context Inspector</title>
+  <style>/* __INLINE_CSS__ */</style>
+</head>
+<body>
+  <div id="app-shell" class="shell">
+    <!-- Left Navigation Sidebar (shadcn/ui Dashboard-01) -->
+    <aside class="rail" aria-label="侧边导航栏">
+      <div class="brand">
+        <div class="brand-logo">
+          <img src="__AGY_LOGO_DATA_URI__" alt="agy-context logo" />
+        </div>
+        <div class="brand-meta">
+          <div class="brand-title">Context Inspector</div>
+          <div id="rail-version" class="brand-ver mono">v--</div>
+        </div>
+      </div>
+
+      <nav class="rail-nav" aria-label="主导航">
+        <div class="rail-group">
+          <div class="rail-group-label">监控概览</div>
+          <button type="button" class="rail-btn" data-nav="overview" aria-current="page" title="汇总大看板">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+            <span class="rail-label">汇总大看板</span>
+          </button>
+
+          <button type="button" class="rail-btn" data-nav="tasks" title="多任务监控">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg>
+            <span class="rail-label">多任务监控</span>
+            <span id="nav-tasks-badge" class="rail-badge" hidden>0</span>
+          </button>
+        </div>
+
+        <div class="rail-group">
+          <div class="rail-group-label">诊断与用量</div>
+          <button type="button" class="rail-btn" data-nav="analytics" title="用量分析">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+            <span class="rail-label">用量分析</span>
+          </button>
+
+          <button type="button" class="rail-btn" data-nav="sessions" title="会话诊断">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>
+            <span class="rail-label">会话诊断</span>
+          </button>
+        </div>
+
+        <div class="rail-group">
+          <div class="rail-group-label">管理与系统</div>
+          <button type="button" class="rail-btn" data-nav="accounts" title="账号与额度">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <span class="rail-label">账号与额度</span>
+          </button>
+
+          <button type="button" class="rail-btn" data-nav="system" title="系统与解锁">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span class="rail-label">系统与解锁</span>
+            <span id="nav-update-badge" class="rail-badge warn" hidden>新</span>
+          </button>
+        </div>
+      </nav>
+
+      <div class="rail-footer">
+        <button type="button" id="rail-quota-chip" class="rail-account-card" data-jump="accounts" title="查看账号与额度">
+          <span class="rail-avatar mono">
+            <span id="rail-avatar-char">?</span>
+            <span id="rail-quota-dot" class="rail-avatar-dot"></span>
+          </span>
+          <span class="rail-footer-text">
+            <span id="rail-quota-name" class="rail-footer-primary truncate">未连接账号</span>
+            <span id="rail-quota-text" class="rail-footer-secondary mono truncate">额度 --</span>
+          </span>
+          <svg class="icon icon-xs text-muted rail-footer-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+        </button>
+
+        <button type="button" id="rail-unlock-chip" class="rail-unlock-row" data-jump="system" title="查看上下文解锁档位">
+          <span id="rail-unlock-dot" class="dot"></span>
+          <span id="rail-unlock-text" class="mono truncate">档位 --</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button type="button" id="btn-sidebar-toggle" class="btn btn-ghost btn-icon" aria-label="折叠或展开侧边栏" aria-expanded="true" title="折叠/展开侧边栏">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+          </button>
+          <span class="v-sep" aria-hidden="true"></span>
+          <div class="breadcrumb">
+            <span id="topbar-group" class="breadcrumb-parent">监控概览</span>
+            <svg class="icon icon-xs breadcrumb-sep" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            <h1 id="topbar-title" class="topbar-title">汇总大看板</h1>
+          </div>
+          <span id="topbar-sub" class="topbar-sub">365 天活跃热力图、连续天数与全局运行概览</span>
+        </div>
+        <div class="topbar-actions">
+          <span id="topbar-sync-time" class="sync-clock mono">--</span>
+          <button type="button" id="btn-global-refresh" class="btn btn-sm">
+            <svg id="refresh-icon" class="icon icon-xs" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+            <span>刷新</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="content-scroll">
+        <div class="page-container">
+
+          <!-- ================================================= -->
+          <!-- VIEW 1: OVERVIEW & 365-DAY ACTIVITY HEATMAP       -->
+          <!-- ================================================= -->
+          <section id="view-overview" class="view-panel">
+            <!-- Collapsible Live Task Banner -->
+            <div class="live-banner" id="ov-live-strip">
+              <div class="live-banner-head">
+                <div class="row gap-2 min-w-0">
+                  <span id="ov-live-dot" class="dot"></span>
+                  <span class="font-semibold text-sm">实时任务动态</span>
+                  <span id="ov-live-counts" class="badge">检测中...</span>
+                </div>
+                <button type="button" class="btn btn-ghost btn-sm" data-jump="tasks">
+                  <span>进入多任务监控</span>
+                  <svg class="icon icon-xs" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+              </div>
+              <div id="ov-live-cards" class="live-mini-grid" hidden></div>
+            </div>
+
+            <!-- 4-Column Symmetrical Dashboard-01 KPI Row -->
+            <div id="ov-kpi-grid" class="kpi-grid-4">
+              <div class="kpi-card">
+                <div class="kpi-head">
+                  <span class="kpi-label">活跃天数 (365d)</span>
+                  <span id="ov-streak" class="badge badge-secondary">连续 -- 天</span>
+                </div>
+                <div id="ov-active-days" class="kpi-value mono"><span class="skeleton" style="width:76px;height:26px;"></span></div>
+                <div id="ov-active-rate" class="kpi-sub">活跃率 --% · 最长 -- 天</div>
+              </div>
+
+              <div class="kpi-card">
+                <div class="kpi-head">
+                  <span class="kpi-label">年度累计 Token</span>
+                  <span id="ov-cache-badge" class="badge">缓存 --%</span>
+                </div>
+                <div id="ov-total-tokens" class="kpi-value mono"><span class="skeleton" style="width:92px;height:26px;"></span></div>
+                <div id="ov-cache-rate" class="kpi-sub">日均活跃 --</div>
+              </div>
+
+              <div class="kpi-card">
+                <div class="kpi-head">
+                  <span class="kpi-label">年度预估费用</span>
+                  <svg class="icon icon-sm kpi-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                </div>
+                <div id="ov-total-cost" class="kpi-value mono"><span class="skeleton" style="width:84px;height:26px;"></span></div>
+                <div id="ov-total-req" class="kpi-sub">-- 次生成请求</div>
+              </div>
+
+              <div class="kpi-card">
+                <div class="kpi-head">
+                  <span class="kpi-label">主力模型与峰值</span>
+                  <span id="ov-peak-day" class="badge">峰值 --</span>
+                </div>
+                <div id="ov-top-model" class="kpi-value kpi-value-text"><span class="skeleton" style="width:110px;height:22px;"></span></div>
+                <div id="ov-top-model-sub" class="kpi-sub">占比 --% · 峰值 --</div>
+              </div>
+            </div>
+
+            <!-- 365-Day Activity Heatmap Card -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title-block">
+                  <h2 class="card-title">活跃日期热力图</h2>
+                  <div id="heatmap-range-sub" class="card-subtitle mono">最近 365 天 · 点击任意有记录日期查看当天分时明细</div>
+                </div>
+                <div class="heatmap-legend">
+                  <span>低</span>
+                  <span class="heat-swatch" style="background:var(--heat-0);"></span>
+                  <span class="heat-swatch" style="background:var(--heat-1);"></span>
+                  <span class="heat-swatch" style="background:var(--heat-2);"></span>
+                  <span class="heat-swatch" style="background:var(--heat-3);"></span>
+                  <span class="heat-swatch" style="background:var(--heat-4);"></span>
+                  <span>高</span>
+                </div>
+              </div>
+              <div class="heatmap-wrap">
+                <div class="heatmap-inner">
+                  <div id="heatmap-months" class="heatmap-months"></div>
+                  <div class="heatmap-body">
+                    <div class="heatmap-weekdays">
+                      <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+                    </div>
+                    <div id="heatmap-grid" class="heatmap-grid" role="grid" aria-label="年度活跃热力图"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Monthly Trend & Top Models -->
+            <div class="grid-65-35">
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title-block">
+                    <h2 class="card-title">月度消耗趋势</h2>
+                    <span id="ov-monthly-sub" class="card-subtitle mono">近 12 个月 Token 聚合</span>
+                  </div>
+                </div>
+                <div class="hist-wrap">
+                  <div class="hist-gridlines" aria-hidden="true">
+                    <span class="hist-gridline"></span>
+                    <span class="hist-gridline"></span>
+                    <span class="hist-gridline"></span>
+                  </div>
+                  <div id="ov-monthly-bars" class="hist-stage hist-stage-sm"></div>
+                  <div id="ov-monthly-axis" class="hist-xaxis"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title-block">
+                    <h2 class="card-title">年度模型分布 Top 6</h2>
+                    <span id="ov-db-meta" class="card-subtitle mono">-- 会话库</span>
+                  </div>
+                </div>
+                <div id="ov-top-models-list" class="stack gap-3"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================================================= -->
+          <!-- VIEW 2: MULTI-TASK MONITOR KANBAN                 -->
+          <!-- ================================================= -->
+          <section id="view-tasks" class="view-panel" hidden>
+            <div class="toolbar">
+              <div class="row-wrap gap-2">
+                <span class="badge badge-ok" id="tm-count-running">运行中 0</span>
+                <span class="badge badge-warn" id="tm-count-unread">已完成未读 0</span>
+                <span class="text-xs text-muted">仅追踪运行中与已完成未读会话 · 5s 自动同步</span>
+              </div>
+              <div class="row-wrap gap-3">
+                <label class="switch-label" for="tm-autopoll-chk">
+                  <input type="checkbox" role="switch" id="tm-autopoll-chk" class="ui-switch" checked />
+                  <span>自动刷新</span>
+                </label>
+                <div class="row gap-2">
+                  <button type="button" id="tm-mark-all-btn" class="btn btn-sm">全部标为已读</button>
+                  <button type="button" id="tm-refresh-btn" class="btn btn-sm">立即刷新</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="kanban-grid">
+              <!-- Column 1: Running Tasks -->
+              <div class="kanban-col">
+                <div class="kanban-col-head">
+                  <div class="kanban-col-title">
+                    <span class="dot pulse"></span>
+                    <span>正在运行中</span>
+                  </div>
+                  <span id="tm-col-running-num" class="badge badge-secondary">0</span>
+                </div>
+                <div id="tm-running-list" class="stack gap-3"></div>
+              </div>
+
+              <!-- Column 2: Completed & Unread -->
+              <div class="kanban-col">
+                <div class="kanban-col-head">
+                  <div class="kanban-col-title">
+                    <span class="dot warn"></span>
+                    <span>已完成 · 待查收</span>
+                  </div>
+                  <span id="tm-col-unread-num" class="badge badge-secondary">0</span>
+                </div>
+                <div id="tm-unread-list" class="stack gap-3"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================================================= -->
+          <!-- VIEW 3: USAGE ANALYTICS                           -->
+          <!-- ================================================= -->
+          <section id="view-analytics" class="view-panel" hidden>
+            <!-- Flat Filter Toolbar -->
+            <div class="toolbar">
+              <div class="row-wrap gap-2">
+                <div role="tablist" aria-label="统计时间范围" class="seg-group" id="an-range-tabs">
+                  <button type="button" role="tab" class="seg-btn" data-range="today" aria-selected="true">今天</button>
+                  <button type="button" role="tab" class="seg-btn" data-range="yesterday" aria-selected="false">昨天</button>
+                  <button type="button" role="tab" class="seg-btn" data-range="3d" aria-selected="false">近 3 天</button>
+                  <button type="button" role="tab" class="seg-btn" data-range="7d" aria-selected="false">近 7 天</button>
+                  <button type="button" role="tab" class="seg-btn" data-range="30d" aria-selected="false">近 30 天</button>
+                </div>
+                <div class="row gap-1">
+                  <input type="date" id="an-start-date" class="input input-date mono" aria-label="开始日期" />
+                  <span class="text-muted">–</span>
+                  <input type="date" id="an-end-date" class="input input-date mono" aria-label="结束日期" />
+                  <button type="button" id="an-apply-custom" class="btn btn-sm">应用</button>
+                </div>
+              </div>
+              <span id="an-range-badge" class="badge">--</span>
+            </div>
+
+            <!-- Primary 4 Usage KPIs -->
+            <div class="kpi-grid-4">
+              <div class="kpi-card">
+                <div class="kpi-head"><span class="kpi-label">总用量</span></div>
+                <div id="an-total" class="kpi-value mono">--</div>
+                <div id="an-total-full" class="kpi-sub mono">--</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-head"><span class="kpi-label">输入 Token</span></div>
+                <div id="an-input" class="kpi-value mono">--</div>
+                <div id="an-input-full" class="kpi-sub mono">--</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-head"><span class="kpi-label">输出 Token</span></div>
+                <div id="an-output" class="kpi-value mono">--</div>
+                <div id="an-output-full" class="kpi-sub mono">--</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-head"><span class="kpi-label">API 费用估算</span></div>
+                <div id="an-cost" class="kpi-value mono">$--</div>
+                <div id="an-reqs" class="kpi-sub">-- 次请求</div>
+              </div>
+            </div>
+
+            <!-- Secondary 4 Performance Metric Strip -->
+            <div class="metric-strip">
+              <div class="metric-strip-cell">
+                <span class="kpi-label">缓存命中率</span>
+                <span id="an-cache" class="metric-strip-val mono">--%</span>
+                <span class="kpi-sub">输入缓存占比</span>
+              </div>
+              <div class="metric-strip-cell">
+                <span class="kpi-label">首字延迟 (TTFT)</span>
+                <span id="an-ttft" class="metric-strip-val mono">--</span>
+                <span id="an-ttft-sub" class="kpi-sub">--</span>
+              </div>
+              <div class="metric-strip-cell">
+                <span class="kpi-label">正文生成速度</span>
+                <span id="an-speed" class="metric-strip-val mono">--</span>
+                <span id="an-speed-sub" class="kpi-sub">--</span>
+              </div>
+              <div class="metric-strip-cell">
+                <span class="kpi-label">平均输入规模</span>
+                <span id="an-avg-in" class="metric-strip-val mono">--</span>
+                <span id="an-avg-sub" class="kpi-sub">--</span>
+              </div>
+            </div>
+
+            <!-- Interactive Bar Chart & Model Distribution -->
+            <div class="grid-65-35">
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title-block">
+                    <h2 class="card-title">本地生成记录汇总 <span id="an-hist-gran" class="badge badge-secondary">--</span></h2>
+                    <span class="card-subtitle">悬停柱体查看对应时间段明细</span>
+                  </div>
+                  <div class="chart-kv-row mono">
+                    <div class="chart-kv"><span class="chart-kv-label">时段</span><span id="an-b-time" class="chart-kv-val">--</span></div>
+                    <div class="chart-kv"><span class="chart-kv-label">总计</span><span id="an-b-total" class="chart-kv-val">--</span></div>
+                    <div class="chart-kv"><span class="chart-kv-label">输入</span><span id="an-b-in" class="chart-kv-val">--</span></div>
+                    <div class="chart-kv"><span class="chart-kv-label">输出</span><span id="an-b-out" class="chart-kv-val">--</span></div>
+                    <div class="chart-kv"><span class="chart-kv-label">缓存</span><span id="an-b-cache" class="chart-kv-val">--</span></div>
+                    <div class="chart-kv"><span class="chart-kv-label">费用</span><span id="an-b-cost" class="chart-kv-val">$--</span></div>
+                  </div>
+                </div>
+                <div class="hist-wrap">
+                  <div class="hist-gridlines" aria-hidden="true">
+                    <span class="hist-gridline"></span>
+                    <span class="hist-gridline"></span>
+                    <span class="hist-gridline"></span>
+                  </div>
+                  <div id="an-hist-bars" class="hist-stage"></div>
+                  <div id="an-hist-axis" class="hist-xaxis"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title-block">
+                    <h2 class="card-title">模型分布</h2>
+                    <span class="card-subtitle">按 Token 或估算费用对比</span>
+                  </div>
+                  <div role="tablist" aria-label="模型分布维度" class="seg-group" id="an-model-tabs">
+                    <button type="button" role="tab" id="tab-dist-tokens" class="seg-btn" data-dist="tokens" aria-selected="true">Token</button>
+                    <button type="button" role="tab" id="tab-dist-cost" class="seg-btn" data-dist="cost" aria-selected="false">费用</button>
+                  </div>
+                </div>
+                <div id="panel-dist-tokens" role="tabpanel" aria-labelledby="tab-dist-tokens" class="stack gap-3"></div>
+                <div id="panel-dist-cost" role="tabpanel" aria-labelledby="tab-dist-cost" hidden>
+                  <div class="donut-layout">
+                    <div class="donut-box">
+                      <svg id="an-donut-svg" class="donut-svg" viewBox="0 0 120 120"></svg>
+                      <div class="donut-center">
+                        <span id="an-donut-cost" class="donut-total mono">$--</span>
+                        <span id="an-donut-sub" class="donut-label">预估总计</span>
+                      </div>
+                    </div>
+                    <div id="an-donut-legend" class="donut-legend"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sortable Model Details Data Table -->
+            <div class="card">
+              <div class="card-header card-header-tight">
+                <div class="card-title-block">
+                  <h2 id="an-table-heading" class="card-title">模型全量明细</h2>
+                  <span class="card-subtitle">点击列头切换升序或降序排列</span>
+                </div>
+                <span id="an-model-count" class="badge badge-secondary">-- 个模型</span>
+              </div>
+              <div class="table-frame">
+                <div class="table-region" role="region" aria-labelledby="an-table-heading" tabindex="0">
+                  <table id="an-model-table" class="data-table mono">
+                    <caption class="sr-only">按模型聚合的 Token 用量、缓存与费用估算明细</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col" data-type="string"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="0"><span>模型</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                        <th scope="col" data-type="number" aria-sort="descending"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="1"><span>总 Token</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                        <th scope="col" data-type="number"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="2"><span>预估费用</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                        <th scope="col" data-type="number"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="3"><span>输入</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                        <th scope="col" data-type="number"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="4"><span>缓存</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                        <th scope="col" data-type="number"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="5"><span>输出</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                        <th scope="col" data-type="number"><button type="button" commandfor="an-model-table" command="--sort" data-sort-col="6"><span>请求数</span><svg class="sort-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-icon-up" d="m7 9 5-5 5 5"/><path class="sort-icon-down" d="m7 15 5 5 5-5"/></svg></button></th>
+                      </tr>
+                    </thead>
+                    <tbody id="an-model-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div id="table-sort-status" role="status" class="sr-only"></div>
+            </div>
+          </section>
+
+          <!-- ================================================= -->
+          <!-- VIEW 4: ACCOUNTS & QUOTAS MATRIX                  -->
+          <!-- ================================================= -->
+          <section id="view-accounts" class="view-panel" hidden>
+            <div class="card">
+              <div class="card-header">
+                <div class="row gap-3 min-w-0">
+                  <div id="ac-avatar" class="account-avatar-lg mono">?</div>
+                  <div class="stack gap-1 min-w-0">
+                    <div class="row gap-2 min-w-0">
+                      <span id="ac-email" class="mono font-semibold truncate">未连接账户</span>
+                      <span id="ac-plan" class="badge badge-secondary" hidden>--</span>
+                    </div>
+                    <div id="ac-credits" class="card-subtitle mono">正在读取实时配额...</div>
+                  </div>
+                </div>
+                <div class="row gap-2 shrink-0">
+                  <button type="button" id="ac-capture-btn" class="btn btn-sm">捕获当前快照</button>
+                  <button type="button" id="ac-refresh-btn" class="btn btn-sm btn-primary">刷新额度</button>
+                </div>
+              </div>
+              <div id="ac-notice" class="badge badge-crit" hidden></div>
+              <div id="ac-quota-groups" class="quota-groups-grid"></div>
+            </div>
+
+            <!-- Flat Section Header + Independent Account Cards (No Card-in-Card) -->
+            <div class="section-header">
+              <h2 class="section-title">已保存账号快照 <span id="ac-saved-count" class="badge badge-secondary">0</span></h2>
+              <span class="card-subtitle">支持别名备注、余量对比、重置态估算与一键切换</span>
+            </div>
+            <div id="ac-accounts-grid" class="accounts-grid"></div>
+          </section>
+
+          <!-- ================================================= -->
+          <!-- VIEW 5: SESSIONS INSPECTOR (MASTER-DETAIL)        -->
+          <!-- ================================================= -->
+          <section id="view-sessions" class="view-panel" hidden>
+            <div class="sessions-split">
+              <div class="sessions-sidebar-card">
+                <div class="stack gap-2">
+                  <div class="input-icon-wrap">
+                    <svg class="icon icon-sm input-leading-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                    <input type="search" id="se-search" class="input" placeholder="搜索会话标题或工作区..." aria-label="搜索会话" />
+                  </div>
+                  <div class="row-between text-xs text-muted">
+                    <span id="se-list-count">最近会话</span>
+                    <button type="button" id="se-reload-list" class="btn btn-ghost btn-sm">刷新</button>
+                  </div>
+                </div>
+                <div id="se-list" class="session-list"></div>
+              </div>
+
+              <div id="se-detail-pane" class="stack gap-4 min-w-0">
+                <!-- Session Overview Card -->
+                <div class="card">
+                  <div class="card-header">
+                    <div class="card-title-block">
+                      <h2 id="se-title" class="card-title truncate">请选择左侧会话</h2>
+                      <div id="se-meta-sub" class="card-subtitle mono truncate">--</div>
+                    </div>
+                    <div class="row gap-2 shrink-0">
+                      <span id="se-usage-badge" class="badge">--%</span>
+                      <button type="button" id="se-copy-jump-btn" class="btn btn-sm">复制标题定位</button>
+                    </div>
+                  </div>
+
+                  <div class="row gap-2" style="align-items:baseline;margin-bottom:10px;">
+                    <span id="se-cur-tokens" class="kpi-value mono">--</span>
+                    <span class="mono text-muted">/ <span id="se-max-tokens">--</span></span>
+                    <span id="se-data-src" class="badge badge-secondary ml-auto">--</span>
+                  </div>
+
+                  <div class="stacked-bar" id="se-stacked-bar" style="margin-bottom:14px;">
+                    <div id="se-seg-sys" class="stacked-seg" style="width:0%;background:var(--chart-1);"></div>
+                    <div id="se-seg-tool" class="stacked-seg" style="width:0%;background:var(--chart-2);"></div>
+                    <div id="se-seg-user" class="stacked-seg" style="width:0%;background:var(--chart-3);"></div>
+                    <div id="se-seg-model" class="stacked-seg" style="width:0%;background:var(--chart-4);"></div>
+                  </div>
+
+                  <div class="metric-strip">
+                    <div class="metric-strip-cell"><span class="kpi-label">Prompt 缓存命中</span><span id="se-cache-ratio" class="metric-strip-val mono">--%</span></div>
+                    <div class="metric-strip-cell"><span class="kpi-label">单次未缓存输入</span><span id="se-uncached" class="metric-strip-val mono">--</span></div>
+                    <div class="metric-strip-cell"><span class="kpi-label">累积生成输出</span><span id="se-output" class="metric-strip-val mono">--</span></div>
+                    <div class="metric-strip-cell"><span class="kpi-label">剩余可用空间</span><span id="se-remaining" class="metric-strip-val mono">--</span></div>
+                  </div>
+
+                  <div class="perf-inline-bar mono">
+                    <span>正文 <strong id="se-body-speed">--</strong> tok/s</span>
+                    <span>总速 <strong id="se-total-speed">--</strong> tok/s</span>
+                    <span>首字 <strong id="se-ttft">--</strong> s</span>
+                    <span>累计耗时 <strong id="se-latency">--</strong></span>
+                  </div>
+                </div>
+
+                <!-- Wide Smooth AreaChart Card -->
+                <div class="card">
+                  <div class="card-header card-header-tight">
+                    <div class="card-title-block">
+                      <h2 class="card-title">上下文轮次增长曲线</h2>
+                      <span id="se-tl-stats" class="card-subtitle mono">--</span>
+                    </div>
+                  </div>
+                  <div class="timeline-stage">
+                    <svg id="se-timeline-svg"></svg>
+                  </div>
+                </div>
+
+                <!-- Breakdown + Tools Side-by-Side -->
+                <div class="grid-2">
+                  <div class="card">
+                    <div class="card-header card-header-tight">
+                      <h2 class="card-title">上下文构成明细</h2>
+                    </div>
+                    <div id="se-breakdown-list" class="stack gap-3"></div>
+                  </div>
+                  <div class="card">
+                    <div class="card-header card-header-tight">
+                      <h2 class="card-title">工具调用分布</h2>
+                      <span id="se-tool-total" class="badge badge-secondary">-- 次</span>
+                    </div>
+                    <div id="se-tools-list" class="stack gap-2" style="max-height:240px;overflow-y:auto;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================================================= -->
+          <!-- VIEW 6: SYSTEM, CONTEXT UNLOCK & OTA UPDATER      -->
+          <!-- ================================================= -->
+          <section id="view-system" class="view-panel" hidden>
+            <div class="grid-2">
+              <!-- Context Unlock Workbench -->
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title-block">
+                    <h2 class="card-title">上下文门禁解锁与预算管理</h2>
+                    <div class="card-subtitle">Cortex 256K 截断解除与目标档位配置</div>
+                  </div>
+                  <span id="sy-unlock-badge" class="badge">检测中...</span>
+                </div>
+
+                <div class="stack gap-3">
+                  <div class="stack gap-2">
+                    <span class="text-xs font-medium text-muted">目标上下文档位</span>
+                    <div id="sy-preset-group" class="radio-card-grid" role="radiogroup" aria-label="目标上下文档位">
+                      <button type="button" class="radio-card" role="radio" data-preset="256k" aria-checked="false">
+                        <div class="radio-card-top">
+                          <span class="radio-card-size mono">256K</span>
+                          <span class="radio-indicator" aria-hidden="true"></span>
+                        </div>
+                        <span class="badge badge-secondary" style="width:fit-content;">1.0x 基准</span>
+                        <span class="text-xs text-muted">官方默认窗口</span>
+                      </button>
+                      <button type="button" class="radio-card" role="radio" data-preset="512k" aria-checked="true">
+                        <div class="radio-card-top">
+                          <span class="radio-card-size mono">512K</span>
+                          <span class="radio-indicator" aria-hidden="true"></span>
+                        </div>
+                        <span class="badge badge-secondary" style="width:fit-content;">~1.3x 消耗</span>
+                        <span class="text-xs text-muted">均衡扩展推荐</span>
+                      </button>
+                      <button type="button" class="radio-card" role="radio" data-preset="900k" aria-checked="false">
+                        <div class="radio-card-top">
+                          <span class="radio-card-size mono">900K</span>
+                          <span class="radio-indicator" aria-hidden="true"></span>
+                        </div>
+                        <span class="badge badge-secondary" style="width:fit-content;">~1.8x 消耗</span>
+                        <span class="text-xs text-muted">长上下文分析</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="target-list">
+                    <div class="target-row">
+                      <div class="stack gap-1 min-w-0">
+                        <span class="text-sm font-medium">桌面端 Language Server</span>
+                        <span id="sy-desktop-path" class="mono text-xs text-muted truncate">--</span>
+                      </div>
+                      <span id="sy-desktop-badge" class="badge shrink-0">--</span>
+                    </div>
+                    <div class="target-row">
+                      <div class="stack gap-1 min-w-0">
+                        <span class="text-sm font-medium">agy CLI 终端</span>
+                        <span id="sy-cli-path" class="mono text-xs text-muted truncate">--</span>
+                      </div>
+                      <span id="sy-cli-badge" class="badge shrink-0">--</span>
+                    </div>
+                  </div>
+
+                  <div id="sy-log-card" class="terminal-card" hidden>
+                    <div class="terminal-head">
+                      <span class="mono">Execution Output</span>
+                      <button type="button" id="sy-copy-log" class="btn btn-ghost btn-sm" style="height:22px;padding:0 6px;font-size:11px;">复制</button>
+                    </div>
+                    <div id="sy-log-box" class="console-box"></div>
+                  </div>
+                </div>
+
+                <div class="card-footer">
+                  <button type="button" id="sy-restore-btn" class="btn btn-sm btn-outline-destructive">还原备份</button>
+                  <div class="row gap-2">
+                    <button type="button" id="sy-recheck-btn" class="btn btn-sm">重新检测</button>
+                    <button type="button" id="sy-unlock-btn" class="btn btn-sm btn-primary">执行解锁</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- OTA Update Workbench -->
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title-block">
+                    <h2 class="card-title">版本更新管理</h2>
+                    <div class="card-subtitle mono">q1uuuu/agy-context</div>
+                  </div>
+                  <span id="sy-ver-badge" class="badge">检测中...</span>
+                </div>
+
+                <div class="stack gap-3">
+                  <div class="version-compare">
+                    <div class="stack gap-1">
+                      <span class="text-xs text-muted">当前安装</span>
+                      <span id="sy-curr-ver" class="mono font-semibold" style="font-size:16px;">v--</span>
+                    </div>
+                    <svg class="icon icon-sm text-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    <div class="stack gap-1" style="text-align:right;">
+                      <span class="text-xs text-muted">最新发布</span>
+                      <span id="sy-latest-ver" class="mono font-semibold" style="font-size:16px;">v--</span>
+                    </div>
+                  </div>
+
+                  <div class="terminal-card">
+                    <div class="terminal-head">
+                      <span>Release Notes</span>
+                      <span id="sy-release-date" class="mono">--</span>
+                    </div>
+                    <div id="sy-changelog" class="console-box" style="min-height:148px;">正在检查版本信息...</div>
+                  </div>
+                </div>
+
+                <div class="card-footer">
+                  <button type="button" id="sy-open-repo" class="btn btn-sm">GitHub 仓库</button>
+                  <div class="row gap-2">
+                    <button type="button" id="sy-check-update" class="btn btn-sm">检查更新</button>
+                    <button type="button" id="sy-apply-update" class="btn btn-sm btn-primary" hidden>一键热升级</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Restart App Confirmation AlertDialog (Light Dismiss + Top-Layer Motion) -->
+  <dialog id="restart-dialog" class="ui-dialog" closedby="any" aria-labelledby="dlg-title">
+    <div class="dialog-head">
+      <h2 id="dlg-title" class="dialog-title">重启 Antigravity 使账号生效</h2>
+      <p class="dialog-desc">
+        已切换至账号 <strong id="dlg-target-acct" class="mono" style="color:var(--foreground);">--</strong>，需要重启 Antigravity 客户端完成会话与凭证切换。
+      </p>
+      <div id="dlg-error" class="badge badge-crit" style="margin-top:6px;white-space:normal;" hidden></div>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" id="dlg-cancel" class="btn btn-sm">稍后手动重启</button>
+      <button type="button" id="dlg-confirm" class="btn btn-sm btn-primary">立即重启</button>
+    </div>
+  </dialog>
+
+  <div id="floating-tip" role="tooltip"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>/* __INLINE_JS__ */</script>
+</body>
+</html>

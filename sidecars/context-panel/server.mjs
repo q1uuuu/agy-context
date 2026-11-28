@@ -27,6 +27,11 @@ import {
   deleteAccountAsync,
   restartAntigravityApp
 } from '../../scripts/account-manager.mjs';
+import {
+  getTaskMonitorData,
+  markTaskRead,
+  markAllTasksRead
+} from '../../scripts/task-monitor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '5173', 10);
@@ -420,6 +425,31 @@ const server = createServer(async (req, res) => {
       sendJson(res, result.success ? 200 : 400, result, req);
     } catch (err) {
       sendJson(res, 500, { success: false, error: err.message }, req);
+    }
+    return;
+  }
+
+  // API: Multi-Task Monitor (Running & Completed Unread)
+  if (url.pathname === '/api/tasks' && req.method === 'GET') {
+    try {
+      const data = await getTaskMonitorData({ sessionLimit: 30 });
+      sendJson(res, 200, data, req);
+    } catch (err) {
+      sendJson(res, 500, { error: err.message }, req);
+    }
+    return;
+  }
+
+  // API: Mark Unread Task(s) Read
+  if (url.pathname === '/api/tasks/read' && req.method === 'POST') {
+    try {
+      const payload = await readJsonBody(req);
+      const result = payload.all
+        ? markAllTasksRead(Array.isArray(payload.items) ? payload.items : [])
+        : markTaskRead(payload.conversationId, payload.updateTimeMs);
+      sendJson(res, result.success ? 200 : 400, result, req);
+    } catch (err) {
+      sendJson(res, err.statusCode || 500, { success: false, error: err.message }, req);
     }
     return;
   }

@@ -1,8 +1,8 @@
 {
   "name": "agy-context",
   "displayName": "Context Inspector",
-  "description": "Antigravity 实时上下文与 Token 用量监控插件，支持上下文窗口档位切换、突破 256K 限制解锁、会话构成深度剖析与全局用量大盘，原生嵌入右侧辅助侧边栏静默运行。",
-  "version": "26.4.0",
+  "description": "Antigravity 实时上下文与 Token 监控插件：支持右侧辅助栏单会话诊断、左侧边栏全屏看板（365 天活跃热力图、多任务运行与未读进度监控、全局用量与多账号额度管理、256K 上下文解锁）。",
+  "version": "26.3.2",
   "author": "q1u",
   "homepage": "https://github.com/q1uuuu/agy-context",
   "repository": "https://github.com/q1uuuu/agy-context",
