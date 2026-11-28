@@ -119,7 +119,34 @@ export function resolveTranscriptPath(convId, customPath) {
 let cachedNativeStats = null;
 let lastNativeScanMs = 0;
 let lastNativeScanDateKey = '';
-let isNativeScanning = false;
+let lastNativeIncludesOlder = false;
+let lastNativeScanSnapshot = null;
+let inFlightNativeScanPromise = null;
+let inFlightIncludesOlder = false;
+let activeNativeScanSeq = 0;
+let committedNativeScanSeq = 0;
+
+const DISK_INDEX_VERSION = 1;
+const DISK_INDEX_PATH = path.join(os.homedir(), '.gemini', 'antigravity', 'plugin_data', 'agy-context', 'token-index.v1.json');
+let diskIndexLoaded = false;
+let diskIndexWriteTimer = null;
+let diskIndexDirty = false;
+let scannedFullHistory = false;
+
+let cachedPricingState = null;
+const modelPricingCache = new Map();
+let archiveParseCache = null;
+const dbParseCache = new Map();
+const sessionPerfCache = new Map();
+const transcriptParseCache = new Map();
+
+function setBoundedCache(cacheMap, key, value, maxSize) {
+  if (!cacheMap.has(key) && cacheMap.size >= maxSize) {
+    const oldestKey = cacheMap.keys().next().value;
+    if (oldestKey !== undefined) cacheMap.delete(oldestKey);
+  }
+  cacheMap.set(key, value);
+}
 
 // OpenRouter real-time API pricing rates ($ per 1M tokens, synced 2026-11-19)
 // Configured for active & recent Antigravity models:
@@ -222,10 +249,22 @@ export const DEFAULT_MODEL_PRICING = {
  * Supports user-defined overrides while keeping official defaults as fallback.
  * @returns {object}
  */
-export function getMergedPricingConfig() {
+function loadPricingState() {
+  const now = Date.now();
+  if (cachedPricingState && (now - cachedPricingState.checkedAt < 5000)) {
+    return cachedPricingState;
+  }
   const customConfigPath = path.join(os.homedir(), '.gemini', 'antigravity', 'pricing_config.json');
+  let mtimeMs = -1;
+  try {
+    mtimeMs = fs.statSync(customConfigPath).mtimeMs;
+  } catch {}
+  if (cachedPricingState && cachedPricingState.mtimeMs === mtimeMs) {
+    cachedPricingState.checkedAt = now;
+    return cachedPricingState;
+  }
   let customRates = {};
-  if (fs.existsSync(customConfigPath)) {
+  if (mtimeMs >= 0) {
     try {
       const parsed = JSON.parse(fs.readFileSync(customConfigPath, 'utf8'));
       if (parsed && typeof parsed.rates === 'object') {
@@ -233,11 +272,23 @@ export function getMergedPricingConfig() {
       }
     } catch (e) {}
   }
-  return { ...DEFAULT_MODEL_PRICING, ...customRates };
+  const merged = { ...DEFAULT_MODEL_PRICING, ...customRates };
+  const customOnly = {};
+  for (const [k, pRate] of Object.entries(merged)) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_MODEL_PRICING, k) || DEFAULT_MODEL_PRICING[k] !== pRate) {
+      customOnly[k.toLowerCase().trim()] = pRate;
+    }
+  }
+  modelPricingCache.clear();
+  cachedPricingState = { checkedAt: now, mtimeMs, merged, customOnly };
+  return cachedPricingState;
+}
+
+export function getMergedPricingConfig() {
+  return loadPricingState().merged;
 }
 
 function matchPricingFromTable(lower, table) {
-  if (!table || typeof table !== 'object') return null;
   if (Object.prototype.hasOwnProperty.call(table, lower)) return table[lower];
   const keys = Object.keys(table).sort((a, b) => b.length - a.length);
   for (const key of keys) {
@@ -265,31 +316,37 @@ const HEURISTIC_PRICING_RULES = [
 
 export function getModelPricing(modelName) {
   const lower = (modelName || '').toLowerCase().trim();
+  if (!lower) return null;
+
+  const pricingState = loadPricingState();
+  if (modelPricingCache.has(lower)) {
+    return modelPricingCache.get(lower);
+  }
 
   // Explicitly ignore deprecated / discontinued models
   if (lower.includes('1.5') || lower.includes('gemini-3-flash') || lower.includes('gemini 3 flash') || lower.includes('3.5') || lower.includes('3-5')) {
+    modelPricingCache.set(lower, null);
     return null;
   }
 
   // 1. User custom rates take priority, then default pricing table (exact -> longest substring)
-  const merged = getMergedPricingConfig();
-  const customOnly = {};
-  for (const [k, p] of Object.entries(merged)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_MODEL_PRICING, k) || DEFAULT_MODEL_PRICING[k] !== p) {
-      customOnly[k.toLowerCase().trim()] = p;
-    }
+  let matched = matchPricingFromTable(lower, pricingState.customOnly);
+  if (!matched) {
+    matched = matchPricingFromTable(lower, DEFAULT_MODEL_PRICING);
   }
-  const customMatch = matchPricingFromTable(lower, customOnly);
-  if (customMatch) return customMatch;
-
-  const defaultMatch = matchPricingFromTable(lower, DEFAULT_MODEL_PRICING);
-  if (defaultMatch) return defaultMatch;
 
   // 2. Heuristic fallback rules for active model variants (including Orchestrator labels)
-  for (const rule of HEURISTIC_PRICING_RULES) {
-    if (rule.match(lower)) return rule.rate;
+  if (!matched) {
+    for (const rule of HEURISTIC_PRICING_RULES) {
+      if (rule.match(lower)) {
+        matched = rule.rate;
+        break;
+      }
+    }
   }
-  return null;
+
+  modelPricingCache.set(lower, matched || null);
+  return matched || null;
 }
 
 /**
@@ -374,7 +431,8 @@ function getStringField(fieldNum, buf) {
   const b = getBytesField(fieldNum, buf);
   if (!b || b.length === 0) return null;
   try {
-    const s = b.toString('utf8').trim();
+    const raw = Buffer.isBuffer(b) ? b : Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+    const s = raw.toString('utf8').trim();
     return s.length > 0 ? s : null;
   } catch { return null; }
 }
@@ -388,15 +446,153 @@ function getDuration(buf) {
   return (val > 0 && Number.isFinite(val)) ? val : null;
 }
 
-function isTextCompleteStep(status, payloadHex) {
-  if (Number(status) !== 3 || !payloadHex) return false;
-  const payBuf = Buffer.from(payloadHex, 'hex');
+function isTextCompleteStep(status, payload) {
+  if (Number(status) !== 3 || !payload) return false;
+  const payBuf = (payload instanceof Uint8Array) ? payload : Buffer.from(payload, 'hex');
   const resp = getBytesField(20, payBuf);
   if (!resp) return false;
   const stopReason = getVarintField(12, resp);
   const textResp = getStringField(1, resp);
   const toolCalls = getBytesField(7, resp);
   return stopReason === 2 && Boolean(textResp) && !toolCalls;
+}
+
+function getDbFileSignatureAndMtime(dbPath) {
+  try {
+    const st = fs.statSync(dbPath);
+    let sig = `${st.mtimeMs}:${st.size}`;
+    let effectiveMtimeMs = st.mtimeMs;
+    try {
+      const walSt = fs.statSync(`${dbPath}-wal`);
+      sig += `|${walSt.mtimeMs}:${walSt.size}`;
+      if (walSt.mtimeMs > effectiveMtimeMs) effectiveMtimeMs = walSt.mtimeMs;
+    } catch {}
+    return { sig, effectiveMtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function getDbFileSignature(dbPath) {
+  const info = getDbFileSignatureAndMtime(dbPath);
+  return info ? info.sig : null;
+}
+
+function loadDiskTokenIndex() {
+  if (diskIndexLoaded) return;
+  diskIndexLoaded = true;
+  if (!fs.existsSync(DISK_INDEX_PATH)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DISK_INDEX_PATH, 'utf8'));
+    if (!parsed || parsed.version !== DISK_INDEX_VERSION || !parsed.dbs || typeof parsed.dbs !== 'object') return;
+    for (const [dbPath, item] of Object.entries(parsed.dbs)) {
+      if (!item || typeof item !== 'object' || !item.sig) continue;
+      const events = Array.isArray(item.events)
+        ? item.events.map(ev => ({
+            timestamp_seconds: Number(ev[0]) || 0,
+            model: String(ev[1] || '未知模型'),
+            input_tokens: Number(ev[2]) || 0,
+            output_tokens: Number(ev[3]) || 0,
+            cached_tokens: Number(ev[4]) || 0,
+            total_tokens: (Number(ev[2]) || 0) + (Number(ev[3]) || 0) + (Number(ev[4]) || 0)
+          }))
+        : [];
+      const samples = Array.isArray(item.samples)
+        ? item.samples.map(sm => ({
+            model: String(sm[0] || ''),
+            source: String(sm[1] || 'antigravity'),
+            timestamp: Number(sm[2]) || 0,
+            first_text_seconds: Number(sm[3]) || 0,
+            body_tokens_per_second: Number(sm[4]) || 0
+          }))
+        : [];
+      const stepRecords = Array.isArray(item.stepRecords)
+        ? item.stepRecords.map(sr => ({ ts: sr[0] || null, textComplete: Boolean(sr[1]) }))
+        : [];
+      dbParseCache.set(dbPath, {
+        sig: item.sig,
+        archivedCount: Number(item.archivedCount || 0),
+        lastGenIdx: item.lastGenIdx !== undefined ? Number(item.lastGenIdx) : -1,
+        genRowCount: Number(item.genRowCount || 0),
+        lastStepIdx: item.lastStepIdx !== undefined ? Number(item.lastStepIdx) : -1,
+        stepCount: Number(item.stepCount !== undefined ? item.stepCount : stepRecords.length),
+        lastStepPending: Boolean(item.lastStepPending),
+        stepRecords,
+        events,
+        samples,
+        totalGenerations: Number(item.totalGenerations || 0),
+        skippedLarge: Number(item.skippedLarge || 0),
+        hasPerfScan: Boolean(item.hasPerfScan)
+      });
+    }
+  } catch (err) {
+    console.warn('[agy-context] Failed to load disk token index:', err.message);
+  }
+}
+
+function flushDiskTokenIndexSync() {
+  if (!diskIndexDirty) return;
+  diskIndexDirty = false;
+  const tmpPath = `${DISK_INDEX_PATH}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    const dir = path.dirname(DISK_INDEX_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const sampleCutoffSec = Math.floor(Date.now() / 1000) - 8 * 24 * 3600;
+    const dbsObj = {};
+    for (const [dbPath, entry] of dbParseCache.entries()) {
+      const prunedSamples = (entry.samples || []).filter(s => s.timestamp >= sampleCutoffSec);
+      dbsObj[dbPath] = {
+        sig: entry.sig,
+        archivedCount: entry.archivedCount,
+        lastGenIdx: entry.lastGenIdx ?? -1,
+        genRowCount: entry.genRowCount ?? 0,
+        lastStepIdx: entry.lastStepIdx ?? -1,
+        stepCount: entry.stepCount ?? (entry.stepRecords ? entry.stepRecords.length : 0),
+        lastStepPending: Boolean(entry.lastStepPending),
+        stepRecords: (entry.stepRecords || []).map(sr => [sr.ts || 0, sr.textComplete ? 1 : 0]),
+        events: (entry.events || []).map(e => [
+          e.timestamp_seconds,
+          e.model,
+          e.input_tokens,
+          e.output_tokens,
+          e.cached_tokens
+        ]),
+        samples: prunedSamples.map(s => [
+          s.model,
+          s.source,
+          s.timestamp,
+          s.first_text_seconds,
+          s.body_tokens_per_second
+        ]),
+        totalGenerations: entry.totalGenerations || 0,
+        skippedLarge: entry.skippedLarge || 0,
+        hasPerfScan: Boolean(entry.hasPerfScan)
+      };
+    }
+    fs.writeFileSync(tmpPath, JSON.stringify({
+      version: DISK_INDEX_VERSION,
+      updatedAt: new Date().toISOString(),
+      dbs: dbsObj
+    }), 'utf8');
+    fs.renameSync(tmpPath, DISK_INDEX_PATH);
+  } catch (err) {
+    if (fs.existsSync(tmpPath)) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+    console.warn('[agy-context] Failed to flush disk token index:', err.message);
+  }
+}
+
+function scheduleSaveDiskTokenIndex() {
+  diskIndexDirty = true;
+  if (diskIndexWriteTimer) return;
+  diskIndexWriteTimer = setTimeout(() => {
+    diskIndexWriteTimer = null;
+    flushDiskTokenIndexSync();
+  }, 1500);
+  if (typeof diskIndexWriteTimer.unref === 'function') {
+    diskIndexWriteTimer.unref();
+  }
 }
 
 /**
@@ -425,15 +621,304 @@ function querySqlite(dbPath, sql, timeout = 8000) {
   return JSON.parse(stdout.trim() || '[]');
 }
 
-/**
- * Cross-platform Pure JavaScript Native Antigravity SQLite & Protobuf scanner.
- * 100% self-calculating, zero external npm dependencies.
- * @returns {object}
- */
-export function scanNativeStatsJs() {
+function parseStepsAndGenRows(stepsRows, genRows, { useRawBlob, source, archivedIds, existingStepRecords = [], startOrdinal = 0, existingLastStepIdx = -1, replaceLastStep = false }) {
+  const stepRecords = existingStepRecords.slice();
+  if (replaceLastStep && stepRecords.length > 0 && stepsRows.length > 0) {
+    stepRecords.pop();
+  }
+
+  let maxStepIdx = existingLastStepIdx;
+  let lastStepPending = false;
+  for (const r of stepsRows) {
+    if (r.idx !== undefined && r.idx !== null) {
+      const sIdx = Number(r.idx);
+      if (sIdx > maxStepIdx) maxStepIdx = sIdx;
+    }
+    let ts = null;
+    if (r.m) {
+      const metaBuf = useRawBlob ? r.m : Buffer.from(r.m, 'hex');
+      const f1 = getBytesField(1, metaBuf);
+      if (f1) {
+        const sec = getVarintField(1, f1);
+        if (sec && sec > 0) ts = sec;
+      }
+    }
+    const textComplete = r.p ? isTextCompleteStep(r.status, r.p) : false;
+    lastStepPending = Number(r.status) !== 3;
+    stepRecords.push({ ts, textComplete });
+  }
+
+  const events = [];
+  const samples = [];
+  let dbGenerations = 0;
+  let dbSkippedLarge = 0;
+  let maxGenIdx = -1;
+  let ordinal = startOrdinal;
+
+  for (const r of genRows) {
+    const curOrdinal = ordinal++;
+    const genIdx = Number(r.idx);
+    if (genIdx > maxGenIdx) maxGenIdx = genIdx;
+    const isArchived = archivedIds && archivedIds.has(genIdx);
+    if (!isArchived) dbGenerations++;
+
+    const blobSize = Number(r.len || 0);
+    const rawPayload = useRawBlob ? r.data : r.h;
+    if (blobSize > 64 * 1024 * 1024 || !rawPayload) {
+      if (!isArchived) dbSkippedLarge++;
+      continue;
+    }
+
+    const buf = useRawBlob ? rawPayload : Buffer.from(rawPayload, 'hex');
+    const stepTs = curOrdinal < stepRecords.length ? stepRecords[curOrdinal].ts : null;
+    const isComplete = curOrdinal < stepRecords.length ? stepRecords[curOrdinal].textComplete : false;
+
+    const wrapped = getBytesField(1, buf);
+    if (!wrapped) continue;
+
+    // Performance Sample
+    if (isComplete && stepTs) {
+      const usage = getBytesField(4, wrapped);
+      if (usage) {
+        const bodyTokens = getVarintField(10, usage);
+        const firstTextSec = getDuration(getBytesField(11, wrapped));
+        const streamSec = getDuration(getBytesField(12, wrapped));
+        if (bodyTokens && bodyTokens >= 100 && streamSec && streamSec >= 1.0 && firstTextSec) {
+          const model = getStringField(21, wrapped) || getStringField(19, wrapped);
+          if (model) {
+            samples.push({
+              model,
+              source,
+              timestamp: stepTs,
+              first_text_seconds: firstTextSec,
+              body_tokens_per_second: bodyTokens / streamSec
+            });
+          }
+        }
+      }
+    }
+
+    if (isArchived) continue;
+
+    // Generation Event
+    const genUsage = getBytesField(4, wrapped);
+    if (genUsage) {
+      const sysPrompt = getVarintField(1, genUsage) || 0;
+      const rawInp = getVarintField(2, genUsage) || 0;
+      const outTok = getVarintField(3, genUsage) || 0;
+      const cacheTok = getVarintField(5, genUsage) || 0;
+      const inpTok = sysPrompt + rawInp;
+      const generated = rawInp !== 0 || outTok !== 0 || cacheTok !== 0;
+      const modelId = getStringField(19, wrapped);
+      const label = getStringField(21, wrapped);
+      if ((modelId || label || generated) && (generated || inpTok !== 0)) {
+        const timing = getBytesField(9, wrapped);
+        const t4 = timing ? getBytesField(4, timing) : null;
+        const embTs = t4 ? getVarintField(1, t4) : null;
+        const ts = (embTs && embTs > 0) ? embTs : stepTs;
+        if (ts && ts > 0) {
+          events.push({
+            model: label || modelId || '未知模型',
+            input_tokens: inpTok,
+            output_tokens: outTok,
+            cached_tokens: cacheTok,
+            total_tokens: inpTok + cacheTok + outTok,
+            timestamp_seconds: ts
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    stepRecords,
+    events,
+    samples,
+    dbGenerations,
+    dbSkippedLarge,
+    maxGenIdx,
+    maxStepIdx,
+    lastStepPending
+  };
+}
+
+function scanSingleConversationDb(dbPath, archivedIds, { needPerfSamples = false, cachedDb = null } = {}) {
+  const parentDir = path.dirname(path.dirname(dbPath));
+  const source = path.basename(parentDir) || 'antigravity';
+
+  const archivedCount = archivedIds ? archivedIds.size : 0;
+  const payloadColJs = needPerfSamples
+    ? 'CASE WHEN length(step_payload) <= 1048576 THEN step_payload ELSE NULL END as p'
+    : 'NULL as p';
+  const payloadColCli = needPerfSamples
+    ? 'CASE WHEN length(step_payload) <= 1048576 THEN hex(step_payload) ELSE NULL END as p'
+    : 'NULL as p';
+
+  if (DatabaseSync) {
+    let db = null;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true, timeout: 5000 });
+
+      // Incremental append-only fast path when last turn's step had already finished
+      if (
+        cachedDb &&
+        !cachedDb.lastStepPending &&
+        cachedDb.archivedCount === archivedCount &&
+        cachedDb.lastGenIdx !== undefined &&
+        cachedDb.lastGenIdx >= 0 &&
+        (!needPerfSamples || cachedDb.hasPerfScan)
+      ) {
+        const genStat = db.prepare('SELECT MAX(idx) as maxIdx, COUNT(*) as cnt FROM gen_metadata WHERE data IS NOT NULL').get();
+        const stepStat = db.prepare('SELECT MAX(idx) as maxIdx, COUNT(*) as cnt FROM steps WHERE step_type = 15').get();
+        const curMaxIdx = genStat && genStat.maxIdx !== null ? Number(genStat.maxIdx) : -1;
+        const curCnt = genStat ? Number(genStat.cnt || 0) : 0;
+        const curStepMaxIdx = stepStat && stepStat.maxIdx !== null ? Number(stepStat.maxIdx) : -1;
+        const curStepCnt = stepStat ? Number(stepStat.cnt || 0) : 0;
+        const prevStepCount = cachedDb.stepCount ?? (cachedDb.stepRecords ? cachedDb.stepRecords.length : 0);
+        const prevStepMaxIdx = cachedDb.lastStepIdx ?? -1;
+
+        if (
+          curCnt === cachedDb.genRowCount &&
+          curMaxIdx === cachedDb.lastGenIdx &&
+          curStepCnt === prevStepCount &&
+          curStepMaxIdx === prevStepMaxIdx
+        ) {
+          return { ok: true, unchanged: true, entry: cachedDb };
+        }
+
+        if (
+          curCnt >= cachedDb.genRowCount &&
+          curMaxIdx >= cachedDb.lastGenIdx &&
+          curStepCnt >= prevStepCount &&
+          curStepMaxIdx >= prevStepMaxIdx
+        ) {
+          const incSteps = db.prepare(
+            `SELECT idx, CASE WHEN length(metadata) <= 65536 THEN metadata ELSE NULL END as m, status, ${payloadColJs} FROM steps WHERE step_type = 15 AND idx > ? ORDER BY idx`
+          ).all(prevStepMaxIdx);
+          const incGen = db.prepare(
+            'SELECT idx, data, length(data) as len FROM gen_metadata WHERE data IS NOT NULL AND idx > ? ORDER BY idx'
+          ).all(cachedDb.lastGenIdx);
+
+          const delta = parseStepsAndGenRows(incSteps, incGen, {
+            useRawBlob: true,
+            source,
+            archivedIds,
+            existingStepRecords: cachedDb.stepRecords || [],
+            startOrdinal: cachedDb.genRowCount,
+            existingLastStepIdx: prevStepMaxIdx,
+            replaceLastStep: false
+          });
+
+          const mergedEntry = {
+            sig: '',
+            archivedCount,
+            lastGenIdx: delta.maxGenIdx >= 0 ? delta.maxGenIdx : cachedDb.lastGenIdx,
+            genRowCount: cachedDb.genRowCount + incGen.length,
+            lastStepIdx: delta.maxStepIdx,
+            stepCount: delta.stepRecords.length,
+            lastStepPending: delta.lastStepPending,
+            stepRecords: delta.stepRecords,
+            events: cachedDb.events.concat(delta.events),
+            samples: cachedDb.samples.concat(delta.samples),
+            totalGenerations: cachedDb.totalGenerations + delta.dbGenerations,
+            skippedLarge: cachedDb.skippedLarge + delta.dbSkippedLarge,
+            hasPerfScan: Boolean(cachedDb.hasPerfScan || needPerfSamples)
+          };
+          return { ok: true, unchanged: false, entry: mergedEntry };
+        }
+      }
+
+      const stepsRows = db.prepare(
+        `SELECT idx, CASE WHEN length(metadata) <= 65536 THEN metadata ELSE NULL END as m, status, ${payloadColJs} FROM steps WHERE step_type = 15 ORDER BY idx`
+      ).all();
+      const genRows = db.prepare(
+        'SELECT idx, data, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx'
+      ).all();
+
+      const parsed = parseStepsAndGenRows(stepsRows, genRows, {
+        useRawBlob: true,
+        source,
+        archivedIds
+      });
+
+      return {
+        ok: true,
+        unchanged: false,
+        entry: {
+          sig: '',
+          archivedCount,
+          lastGenIdx: parsed.maxGenIdx,
+          genRowCount: genRows.length,
+          lastStepIdx: parsed.maxStepIdx,
+          stepCount: parsed.stepRecords.length,
+          lastStepPending: parsed.lastStepPending,
+          stepRecords: parsed.stepRecords,
+          events: parsed.events,
+          samples: parsed.samples,
+          totalGenerations: parsed.dbGenerations,
+          skippedLarge: parsed.dbSkippedLarge,
+          hasPerfScan: needPerfSamples
+        }
+      };
+    } catch (e) {
+      if (e.code === 'ENOENT') throw e;
+      return { ok: false };
+    } finally {
+      if (db) {
+        try { db.close(); } catch {}
+      }
+    }
+  }
+
+  let stepsRows = [];
+  let genRows = [];
+  try {
+    const stepsSql = `SELECT idx, CASE WHEN length(metadata) <= 65536 THEN hex(metadata) ELSE NULL END as m, status, ${payloadColCli} FROM steps WHERE step_type = 15 ORDER BY idx`;
+    stepsRows = querySqlite(dbPath, stepsSql, 5000);
+  } catch (e) {
+    if (e.code === 'ENOENT') throw e;
+    return { ok: false };
+  }
+  try {
+    const genSql = 'SELECT idx, hex(data) as h, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx';
+    genRows = querySqlite(dbPath, genSql, 10000);
+  } catch (e) {
+    if (e.code === 'ENOENT') throw e;
+    genRows = [];
+  }
+
+  const parsed = parseStepsAndGenRows(stepsRows, genRows, {
+    useRawBlob: false,
+    source,
+    archivedIds
+  });
+
+  return {
+    ok: true,
+    unchanged: false,
+    entry: {
+      sig: '',
+      archivedCount,
+      lastGenIdx: parsed.maxGenIdx,
+      genRowCount: genRows.length,
+      lastStepIdx: parsed.maxStepIdx,
+      stepCount: parsed.stepRecords.length,
+      lastStepPending: parsed.lastStepPending,
+      stepRecords: parsed.stepRecords,
+      events: parsed.events,
+      samples: parsed.samples,
+      totalGenerations: parsed.dbGenerations,
+      skippedLarge: parsed.dbSkippedLarge,
+      hasPerfScan: needPerfSamples
+    }
+  };
+}
+
+function prepareNativeScanContext(includeOlderHistory = false) {
+  loadDiskTokenIndex();
   const home = os.homedir();
   const geminiDir = path.join(home, '.gemini');
-  const dbFiles = [];
+  const rawDbFiles = [];
 
   if (fs.existsSync(geminiDir)) {
     try {
@@ -443,13 +928,55 @@ export function scanNativeStatsJs() {
           if (fs.existsSync(cDir)) {
             for (const f of fs.readdirSync(cDir)) {
               if (f.endsWith('.db') && !f.includes('-shm') && !f.includes('-wal')) {
-                dbFiles.push(path.join(cDir, f));
+                rawDbFiles.push(path.join(cDir, f));
               }
             }
           }
         }
       }
     } catch {}
+  }
+
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+  const now = new Date(nowMs);
+  const pad = n => String(n).padStart(2, '0');
+  const todayKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const pricingStateMtime = loadPricingState()?.mtimeMs || 0;
+  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayEndSec = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime() / 1000);
+  const d30Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+  const start30Sec = Math.floor(d30Start.getTime() / 1000);
+  const d30CutoffMs = (start30Sec - 86400) * 1000;
+  const perfCutoffMs = nowMs - 8 * 24 * 3600 * 1000;
+  const maxAge = 7 * 24 * 3600;
+
+  const dbItems = [];
+  const liveSourceKeys = new Set();
+  const liveDbSet = new Set();
+
+  for (const dbPath of rawDbFiles) {
+    liveDbSet.add(dbPath);
+    let rel = dbPath.replace(/\\/g, '/');
+    const idx = rel.indexOf('/.gemini/');
+    if (idx >= 0) rel = rel.substring(idx + 9);
+    liveSourceKeys.add(rel.toLowerCase());
+    const sigInfo = getDbFileSignatureAndMtime(dbPath);
+    dbItems.push({
+      dbPath,
+      sourceKey: rel,
+      sig: sigInfo ? sigInfo.sig : null,
+      effectiveMtimeMs: sigInfo ? sigInfo.effectiveMtimeMs : 0
+    });
+  }
+
+  dbItems.sort((a, b) => b.effectiveMtimeMs - a.effectiveMtimeMs);
+
+  for (const cachedPath of dbParseCache.keys()) {
+    if (!liveDbSet.has(cachedPath)) {
+      dbParseCache.delete(cachedPath);
+      diskIndexDirty = true;
+    }
   }
 
   const events = [];
@@ -459,192 +986,143 @@ export function scanNativeStatsJs() {
   let skippedLarge = 0;
   let unreadable = 0;
 
-  const nowSec = Math.floor(Date.now() / 1000);
-  const now = new Date();
-  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const d30Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
-  const start30Sec = Math.floor(d30Start.getTime() / 1000);
-  const maxAge = 7 * 24 * 3600;
-
-  // Scan archive db if exists
   const archivePath = path.join(geminiDir, 'antigravity', 'token_usage_archive.db');
-  const liveSourceKeys = new Set();
-  for (const p of dbFiles) {
-    let rel = p.replace(/\\/g, '/');
-    const idx = rel.indexOf('/.gemini/');
-    if (idx >= 0) rel = rel.substring(idx + 9);
-    liveSourceKeys.add(rel.toLowerCase());
+  const archivedIdsBySourceLower = new Map();
+  const archiveSig = getDbFileSignature(archivePath);
+  let archiveHit = !archiveSig;
+
+  if (archiveSig) {
+    try {
+      if (archiveParseCache && archiveParseCache.sig === archiveSig) {
+        archiveHit = true;
+      } else {
+        const srcSet = new Set();
+        const idsBySourceLower = new Map();
+        const archEvents = [];
+        let archTotalGen = 0;
+        let archSkippedLarge = 0;
+
+        let srcRows = [];
+        let genRows = [];
+        if (DatabaseSync) {
+          const adb = new DatabaseSync(archivePath, { readOnly: true, timeout: 8000 });
+          try {
+            srcRows = adb.prepare('SELECT source_key FROM archived_sources').all();
+            genRows = adb.prepare('SELECT source_key, generation_idx, model, input_tokens, output_tokens, cached_tokens, total_tokens, timestamp_seconds, valid, oversized FROM archived_generations ORDER BY source_key, generation_idx').all();
+          } finally {
+            try { adb.close(); } catch {}
+          }
+        } else {
+          srcRows = querySqlite(archivePath, 'SELECT source_key FROM archived_sources');
+          genRows = querySqlite(
+            archivePath,
+            'SELECT source_key, generation_idx, model, input_tokens, output_tokens, cached_tokens, total_tokens, timestamp_seconds, valid, oversized FROM archived_generations ORDER BY source_key, generation_idx'
+          );
+        }
+
+        for (const r of srcRows) {
+          if (r.source_key) srcSet.add(r.source_key);
+        }
+        for (const r of genRows) {
+          const src = r.source_key || '';
+          const srcLower = src.toLowerCase();
+          const genIdx = Number(r.generation_idx);
+          srcSet.add(src);
+          if (!idsBySourceLower.has(srcLower)) idsBySourceLower.set(srcLower, new Set());
+          idsBySourceLower.get(srcLower).add(genIdx);
+          archTotalGen++;
+          if (Number(r.valid) !== 1) {
+            if (Number(r.oversized) === 1) archSkippedLarge++;
+            continue;
+          }
+          const ts = Number(r.timestamp_seconds);
+          if (ts > 0) {
+            archEvents.push({
+              model: r.model || '未知模型',
+              input_tokens: Number(r.input_tokens || 0),
+              output_tokens: Number(r.output_tokens || 0),
+              cached_tokens: Number(r.cached_tokens || 0),
+              total_tokens: Number(r.total_tokens || 0),
+              timestamp_seconds: ts
+            });
+          }
+        }
+        archiveParseCache = {
+          sig: archiveSig,
+          sources: Array.from(srcSet),
+          idsBySourceLower,
+          events: archEvents,
+          totalGenerations: archTotalGen,
+          skippedLarge: archSkippedLarge
+        };
+      }
+
+      for (const sKey of archiveParseCache.sources) scannedSources.add(sKey);
+      for (const [k, setVal] of archiveParseCache.idsBySourceLower.entries()) {
+        if (liveSourceKeys.has(k)) archivedIdsBySourceLower.set(k, setVal);
+      }
+      totalGenerationsScanned += archiveParseCache.totalGenerations;
+      skippedLarge += archiveParseCache.skippedLarge;
+      for (const ev of archiveParseCache.events) events.push(ev);
+    } catch (e) {
+      if (e.code === 'ENOENT') throw e;
+      archiveHit = false;
+    }
+  } else {
+    archiveParseCache = null;
   }
 
-  const archivedIdsBySource = new Map();
-  if (fs.existsSync(archivePath)) {
-    try {
-      const srcRows = querySqlite(archivePath, 'SELECT source_key FROM archived_sources');
-      for (const r of srcRows) {
-        if (r.source_key) scannedSources.add(r.source_key);
-      }
+  return {
+    dbItems,
+    events,
+    samples,
+    scannedSources,
+    archivedIdsBySourceLower,
+    totalGenerationsScanned,
+    skippedLarge,
+    unreadable,
+    nowSec,
+    now,
+    todayKey,
+    pricingStateMtime,
+    todayDate,
+    todayEndSec,
+    d30Start,
+    start30Sec,
+    d30CutoffMs,
+    perfCutoffMs,
+    maxAge,
+    archiveSig,
+    archiveHit,
+    includeOlderHistory
+  };
+}
 
-      const genRows = querySqlite(
-        archivePath,
-        'SELECT source_key, generation_idx, model, input_tokens, output_tokens, cached_tokens, total_tokens, timestamp_seconds, valid, oversized FROM archived_generations ORDER BY source_key, generation_idx'
-      );
-      for (const r of genRows) {
-        const src = r.source_key || '';
-        const genIdx = Number(r.generation_idx);
-        scannedSources.add(src);
-        if (liveSourceKeys.has(src.toLowerCase())) {
-          if (!archivedIdsBySource.has(src)) archivedIdsBySource.set(src, new Set());
-          archivedIdsBySource.get(src).add(genIdx);
-        }
-        totalGenerationsScanned++;
-        if (Number(r.valid) !== 1) {
-          if (Number(r.oversized) === 1) skippedLarge++;
-          continue;
-        }
+function finalizeNativeScanAggregation(ctx, dbSigsSummary, allDbHits) {
+  const {
+    events,
+    samples,
+    scannedSources,
+    totalGenerationsScanned,
+    skippedLarge,
+    unreadable,
+    nowSec,
+    now,
+    todayKey,
+    pricingStateMtime,
+    todayDate,
+    todayEndSec,
+    d30Start,
+    start30Sec,
+    maxAge,
+    archiveSig,
+    archiveHit,
+    includeOlderHistory
+  } = ctx;
 
-        const ts = Number(r.timestamp_seconds);
-        const uInp = Number(r.input_tokens || 0);
-        const uOut = Number(r.output_tokens || 0);
-        const uCch = Number(r.cached_tokens || 0);
-        const uTot = Number(r.total_tokens || 0);
-
-        if (ts >= start30Sec) {
-          events.push({
-            model: r.model || '未知模型',
-            input_tokens: uInp,
-            output_tokens: uOut,
-            cached_tokens: uCch,
-            total_tokens: uTot,
-            timestamp_seconds: ts
-          });
-        }
-      }
-    } catch (e) {
-      if (e.code === 'ENOENT') throw e;
-      // Graceful fallback if archive db is locked or unavailable
-    }
-  }
-
-  // Scan live conversation dbs
-  for (const dbPath of dbFiles) {
-    let rel = dbPath.replace(/\\/g, '/');
-    const idx = rel.indexOf('/.gemini/');
-    if (idx >= 0) rel = rel.substring(idx + 9);
-    const sourceKey = rel;
-    scannedSources.add(sourceKey);
-
-    const archivedIds = archivedIdsBySource.get(sourceKey) || null;
-    let source = 'antigravity';
-    try {
-      const parentDir = path.dirname(path.dirname(dbPath));
-      if (parentDir) source = path.basename(parentDir);
-    } catch {}
-
-    // Read steps
-    const stepRecords = [];
-    try {
-      const stepsSql = 'SELECT CASE WHEN length(metadata) <= 65536 THEN hex(metadata) ELSE NULL END as m, status, CASE WHEN length(step_payload) <= 1048576 THEN hex(step_payload) ELSE NULL END as p FROM steps WHERE step_type = 15 ORDER BY idx';
-      const stepsRows = querySqlite(dbPath, stepsSql, 5000);
-      for (const r of stepsRows) {
-        let ts = null;
-        if (r.m) {
-          const metaBuf = Buffer.from(r.m, 'hex');
-          const f1 = getBytesField(1, metaBuf);
-          if (f1) {
-            const sec = getVarintField(1, f1);
-            if (sec && sec > 0) ts = sec;
-          }
-        }
-        const textComplete = isTextCompleteStep(r.status, r.p);
-        stepRecords.push({ ts, textComplete });
-      }
-    } catch (e) {
-      if (e.code === 'ENOENT') throw e;
-      unreadable++;
-      continue;
-    }
-
-    // Read gen_metadata
-    try {
-      const genSql = 'SELECT idx, hex(data) as h, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx';
-      const genRows = querySqlite(dbPath, genSql, 10000);
-      let ordinal = 0;
-      for (const r of genRows) {
-        const curOrdinal = ordinal++;
-        const genIdx = Number(r.idx);
-        const isArchived = archivedIds && archivedIds.has(genIdx);
-        if (!isArchived) totalGenerationsScanned++;
-
-        const blobSize = Number(r.len || 0);
-        if (blobSize > 64 * 1024 * 1024 || !r.h) {
-          if (!isArchived) skippedLarge++;
-          continue;
-        }
-
-        const buf = Buffer.from(r.h, 'hex');
-        const stepTs = curOrdinal < stepRecords.length ? stepRecords[curOrdinal].ts : null;
-        const isComplete = curOrdinal < stepRecords.length ? stepRecords[curOrdinal].textComplete : false;
-
-        const wrapped = getBytesField(1, buf);
-        if (!wrapped) continue;
-
-        // Performance Sample
-        if (isComplete && stepTs) {
-          const usage = getBytesField(4, wrapped);
-          if (usage) {
-            const bodyTokens = getVarintField(10, usage);
-            const firstTextSec = getDuration(getBytesField(11, wrapped));
-            const streamSec = getDuration(getBytesField(12, wrapped));
-            if (bodyTokens && bodyTokens >= 100 && streamSec && streamSec >= 1.0 && firstTextSec) {
-              const model = getStringField(21, wrapped) || getStringField(19, wrapped);
-              if (model) {
-                samples.push({
-                  model,
-                  source,
-                  timestamp: stepTs,
-                  first_text_seconds: firstTextSec,
-                  body_tokens_per_second: bodyTokens / streamSec
-                });
-              }
-            }
-          }
-        }
-
-        if (isArchived) continue;
-
-        // Generation Event
-        const genUsage = getBytesField(4, wrapped);
-        if (genUsage) {
-          const sysPrompt = getVarintField(1, genUsage) || 0;
-          const rawInp = getVarintField(2, genUsage) || 0;
-          const outTok = getVarintField(3, genUsage) || 0;
-          const cacheTok = getVarintField(5, genUsage) || 0;
-          const inpTok = sysPrompt + rawInp;
-          const generated = rawInp !== 0 || outTok !== 0 || cacheTok !== 0;
-          const modelId = getStringField(19, wrapped);
-          const label = getStringField(21, wrapped);
-          if ((modelId || label || generated) && (generated || inpTok !== 0)) {
-            const timing = getBytesField(9, wrapped);
-            const t4 = timing ? getBytesField(4, timing) : null;
-            const embTs = t4 ? getVarintField(1, t4) : null;
-            const ts = (embTs && embTs > 0) ? embTs : stepTs;
-            if (ts && ts >= start30Sec) {
-              events.push({
-                model: label || modelId || '未知模型',
-                input_tokens: inpTok,
-                output_tokens: outTok,
-                cached_tokens: cacheTok,
-                total_tokens: inpTok + cacheTok + outTok,
-                timestamp_seconds: ts
-              });
-            }
-          }
-        }
-      }
-    } catch (e) {
-      if (e.code === 'ENOENT') throw e;
-      // Next db
-    }
+  const globalSig = `${todayKey}||${pricingStateMtime}||${includeOlderHistory ? 'all' : '30d'}||${archiveSig || ''}||${dbSigsSummary.join(';')}`;
+  if (allDbHits && archiveHit && lastNativeScanSnapshot && lastNativeScanSnapshot.sig === globalSig) {
+    return lastNativeScanSnapshot.result;
   }
 
   // Summarize Performance Samples
@@ -681,20 +1159,13 @@ export function scanNativeStatsJs() {
   events.sort((a, b) => a.timestamp_seconds - b.timestamp_seconds);
 
   const createTotals = () => ({ input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0, request_count: 0, cost: 0 });
-  const addEvent = (t, e) => {
+  const addEvent = (t, e, evCost) => {
     t.input_tokens += e.input_tokens;
     t.output_tokens += e.output_tokens;
     t.cached_tokens += e.cached_tokens;
     t.total_tokens += e.total_tokens;
     t.request_count += 1;
-
-    // Precise event-level model pricing calculation
-    const pricing = getModelPricing(e.model);
-    if (pricing) {
-      t.cost += (e.input_tokens / 1e6 * pricing.input) +
-                (e.cached_tokens / 1e6 * pricing.cached) +
-                (e.output_tokens / 1e6 * pricing.output);
-    }
+    t.cost += evCost;
   };
 
   const todayTot = createTotals();
@@ -703,9 +1174,12 @@ export function scanNativeStatsJs() {
   const d7Tot = createTotals();
   const d30Tot = createTotals();
 
+  const pad = n => String(n).padStart(2, '0');
   const yestDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const d3Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2);
   const d7Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+  const yestTimeMs = yestDate.getTime();
+  const todayTimeMs = todayDate.getTime();
 
   const dailyMap = new Map();
   const hourlyMap = new Map();
@@ -716,48 +1190,58 @@ export function scanNativeStatsJs() {
   const byModel30Days = new Map();
 
   let lastAct = 0;
-  const pad = n => String(n).padStart(2, '0');
 
   for (const e of events) {
+    if (e.timestamp_seconds < start30Sec || e.timestamp_seconds > todayEndSec) continue;
+
     const dt = new Date(e.timestamp_seconds * 1000);
-    const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-    const hourStr = `${dateStr} ${pad(dt.getHours())}:00`;
     const eventDate = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
     if (eventDate < d30Start || eventDate > todayDate) continue;
 
-    addEvent(d30Tot, e);
+    const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+    const hourStr = `${dateStr} ${pad(dt.getHours())}:00`;
+    const eventTimeMs = eventDate.getTime();
+
+    const pricing = getModelPricing(e.model);
+    const evCost = pricing
+      ? (e.input_tokens / 1e6 * pricing.input) +
+        (e.cached_tokens / 1e6 * pricing.cached) +
+        (e.output_tokens / 1e6 * pricing.output)
+      : 0;
+
+    addEvent(d30Tot, e, evCost);
 
     if (!dailyMap.has(dateStr)) dailyMap.set(dateStr, createTotals());
-    addEvent(dailyMap.get(dateStr), e);
+    addEvent(dailyMap.get(dateStr), e, evCost);
 
     if (!hourlyMap.has(hourStr)) hourlyMap.set(hourStr, createTotals());
-    addEvent(hourlyMap.get(hourStr), e);
+    addEvent(hourlyMap.get(hourStr), e, evCost);
 
     if (!byModel30Days.has(e.model)) byModel30Days.set(e.model, createTotals());
-    addEvent(byModel30Days.get(e.model), e);
+    addEvent(byModel30Days.get(e.model), e, evCost);
 
-    if (eventDate.getTime() === todayDate.getTime()) {
-      addEvent(todayTot, e);
+    if (eventTimeMs === todayTimeMs) {
+      addEvent(todayTot, e, evCost);
       if (!byModelToday.has(e.model)) byModelToday.set(e.model, createTotals());
-      addEvent(byModelToday.get(e.model), e);
+      addEvent(byModelToday.get(e.model), e, evCost);
     }
 
-    if (eventDate.getTime() === yestDate.getTime()) {
-      addEvent(yestTot, e);
+    if (eventTimeMs === yestTimeMs) {
+      addEvent(yestTot, e, evCost);
       if (!byModelYesterday.has(e.model)) byModelYesterday.set(e.model, createTotals());
-      addEvent(byModelYesterday.get(e.model), e);
+      addEvent(byModelYesterday.get(e.model), e, evCost);
     }
 
     if (eventDate >= d3Start && eventDate <= todayDate) {
-      addEvent(d3Tot, e);
+      addEvent(d3Tot, e, evCost);
       if (!byModel3Days.has(e.model)) byModel3Days.set(e.model, createTotals());
-      addEvent(byModel3Days.get(e.model), e);
+      addEvent(byModel3Days.get(e.model), e, evCost);
     }
 
     if (eventDate >= d7Start && eventDate <= todayDate) {
-      addEvent(d7Tot, e);
+      addEvent(d7Tot, e, evCost);
       if (!byModel7Days.has(e.model)) byModel7Days.set(e.model, createTotals());
-      addEvent(byModel7Days.get(e.model), e);
+      addEvent(byModel7Days.get(e.model), e, evCost);
     }
 
     if (e.timestamp_seconds > lastAct) lastAct = e.timestamp_seconds;
@@ -777,8 +1261,9 @@ export function scanNativeStatsJs() {
     .map(([hour, t]) => ({ hour, ...t }))
     .sort((a, b) => a.hour.localeCompare(b.hour));
 
-  return {
+  const result = {
     recent_performance: perfJson,
+    all_events: events,
     today: todayTot,
     yesterday: yestTot,
     last_3_days: d3Tot,
@@ -798,6 +1283,126 @@ export function scanNativeStatsJs() {
     last_activity: lastAct > 0 ? lastAct : null,
     generated_at: nowSec
   };
+
+  lastNativeScanSnapshot = { sig: globalSig, result };
+  if (includeOlderHistory) scannedFullHistory = true;
+  if (!allDbHits || diskIndexDirty) {
+    scheduleSaveDiskTokenIndex();
+  }
+  return result;
+}
+
+function processSingleDbItem(item, ctx, perfState) {
+  const { dbPath, sourceKey, sig: dbSig, effectiveMtimeMs } = item;
+  if (!ctx.includeOlderHistory && effectiveMtimeMs > 0 && effectiveMtimeMs < ctx.d30CutoffMs && !dbParseCache.has(dbPath)) {
+    return { scannedFromDisk: false, dbHit: true, sigEntry: null };
+  }
+
+  ctx.scannedSources.add(sourceKey);
+  const archivedIds = ctx.archivedIdsBySourceLower.get(sourceKey.toLowerCase()) || null;
+  const archivedCount = archivedIds ? archivedIds.size : 0;
+  const cachedDb = dbSig ? dbParseCache.get(dbPath) : null;
+
+  if (cachedDb && cachedDb.sig === dbSig && cachedDb.archivedCount === archivedCount) {
+    ctx.totalGenerationsScanned += cachedDb.totalGenerations;
+    ctx.skippedLarge += cachedDb.skippedLarge;
+    for (const ev of cachedDb.events) ctx.events.push(ev);
+    for (const sm of cachedDb.samples) {
+      ctx.samples.push(sm);
+      if (sm.timestamp >= ctx.nowSec - ctx.maxAge && sm.timestamp <= ctx.nowSec) {
+        perfState.recentSampleCount++;
+      }
+    }
+    return { scannedFromDisk: false, dbHit: true, sigEntry: `${dbPath}|${dbSig || ''}|${archivedCount}` };
+  }
+
+  const isWithinPerfWindow = effectiveMtimeMs === 0 || effectiveMtimeMs >= ctx.perfCutoffMs;
+  const needPerfSamples = isWithinPerfWindow && perfState.recentSampleCount < 24;
+  const scanRes = scanSingleConversationDb(dbPath, archivedIds, { needPerfSamples, cachedDb });
+
+  if (!scanRes.ok) {
+    ctx.unreadable++;
+    return { scannedFromDisk: true, dbHit: false, sigEntry: `${dbPath}|${dbSig || ''}|${archivedCount}` };
+  }
+
+  const entry = scanRes.entry;
+  const prevSig = cachedDb?.sig || '';
+  const postDbSig = getDbFileSignature(dbPath) || dbSig || '';
+
+  if (!scanRes.unchanged && postDbSig) {
+    entry.sig = postDbSig;
+    dbParseCache.set(dbPath, entry);
+    diskIndexDirty = true;
+  } else if (scanRes.unchanged && postDbSig && postDbSig !== prevSig) {
+    dbParseCache.set(dbPath, { ...entry, sig: postDbSig });
+    diskIndexDirty = true;
+  }
+
+  ctx.totalGenerationsScanned += entry.totalGenerations;
+  ctx.skippedLarge += entry.skippedLarge;
+  for (const ev of entry.events) ctx.events.push(ev);
+  for (const sm of entry.samples) {
+    ctx.samples.push(sm);
+    if (sm.timestamp >= ctx.nowSec - ctx.maxAge && sm.timestamp <= ctx.nowSec) {
+      perfState.recentSampleCount++;
+    }
+  }
+
+  return {
+    scannedFromDisk: !scanRes.unchanged,
+    dbHit: Boolean(scanRes.unchanged),
+    sigEntry: `${dbPath}|${postDbSig || ''}|${archivedCount}`
+  };
+}
+
+/**
+ * Cross-platform Pure JavaScript Native Antigravity SQLite & Protobuf scanner.
+ * Supports persistent incremental disk indexing and 7-day step_payload pruning.
+ * @param {{ includeOlderHistory?: boolean }} [options]
+ * @returns {object}
+ */
+export function scanNativeStatsJs({ includeOlderHistory = false } = {}) {
+  const ctx = prepareNativeScanContext(includeOlderHistory);
+  const dbSigsSummary = [];
+  const perfState = { recentSampleCount: 0 };
+  let allDbHits = true;
+
+  for (const item of ctx.dbItems) {
+    const step = processSingleDbItem(item, ctx, perfState);
+    if (!step.dbHit) allDbHits = false;
+    if (step.sigEntry) dbSigsSummary.push(step.sigEntry);
+  }
+
+  return finalizeNativeScanAggregation(ctx, dbSigsSummary, allDbHits);
+}
+
+/**
+ * Non-blocking chunked async variant of scanNativeStatsJs that yields to the event loop
+ * every few SQLite files so live context/quota endpoints stay responsive.
+ * @param {{ includeOlderHistory?: boolean }} [options]
+ * @returns {Promise<object>}
+ */
+export async function scanNativeStatsJsAsync({ includeOlderHistory = false } = {}) {
+  const ctx = prepareNativeScanContext(includeOlderHistory);
+  const dbSigsSummary = [];
+  const perfState = { recentSampleCount: 0 };
+  let allDbHits = true;
+  let diskScansInChunk = 0;
+
+  for (const item of ctx.dbItems) {
+    const step = processSingleDbItem(item, ctx, perfState);
+    if (!step.dbHit) allDbHits = false;
+    if (step.sigEntry) dbSigsSummary.push(step.sigEntry);
+    if (step.scannedFromDisk) {
+      diskScansInChunk++;
+      if (diskScansInChunk >= 4) {
+        diskScansInChunk = 0;
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+  }
+
+  return finalizeNativeScanAggregation(ctx, dbSigsSummary, allDbHits);
 }
 
 /**
@@ -842,28 +1447,31 @@ export function scanNativeStatsPs1() {
   }
 }
 
+function getTodayKey(nowMs = Date.now()) {
+  const nowDate = new Date(nowMs);
+  const pad = n => String(n).padStart(2, '0');
+  return `${nowDate.getFullYear()}-${pad(nowDate.getMonth() + 1)}-${pad(nowDate.getDate())}`;
+}
+
 /**
- * Runs the native Antigravity token scanner across all platforms (macOS / Linux / Windows).
- * 100% self-calculating, zero external dependencies.
+ * Runs the native Antigravity token scanner synchronously across all platforms.
  * @param {boolean} [force=false]
+ * @param {{ includeOlderHistory?: boolean }} [options]
  * @returns {object|null}
  */
-export function runNativeStatsScan(force = false) {
+export function runNativeStatsScan(force = false, { includeOlderHistory = false } = {}) {
   const now = Date.now();
-  const nowDate = new Date(now);
-  const pad = n => String(n).padStart(2, '0');
-  const todayKey = `${nowDate.getFullYear()}-${pad(nowDate.getMonth() + 1)}-${pad(nowDate.getDate())}`;
-  if (!force && cachedNativeStats && (now - lastNativeScanMs < 30000) && lastNativeScanDateKey === todayKey) {
+  const todayKey = getTodayKey(now);
+  const hasNeededHistory = !includeOlderHistory || lastNativeIncludesOlder || scannedFullHistory;
+  if (!force && cachedNativeStats && hasNeededHistory && (now - lastNativeScanMs < 60000) && lastNativeScanDateKey === todayKey) {
     return cachedNativeStats;
   }
 
   try {
     let result = null;
-    // Try pure JS native scanner first (uses node:sqlite if available, or system sqlite3 CLI)
     try {
-      result = scanNativeStatsJs();
+      result = scanNativeStatsJs({ includeOlderHistory });
     } catch (e) {
-      // On Windows, fall back to PowerShell winsqlite3 scanner if JS scanner fails (e.g. no sqlite3 CLI)
       if (process.platform === 'win32') {
         result = scanNativeStatsPs1();
       } else {
@@ -871,8 +1479,6 @@ export function runNativeStatsScan(force = false) {
       }
     }
 
-    // Secondary safety guard: on Windows, if result scanned databases but every single one was unreadable,
-    // it indicates sqlite query execution failed completely, so fall back to native-token-scanner.ps1.
     if (process.platform === 'win32' && (!result || (result.databases_scanned > 0 && result.generations_scanned === 0 && result.unreadable_databases === result.databases_scanned))) {
       const psResult = scanNativeStatsPs1();
       if (psResult) {
@@ -884,6 +1490,7 @@ export function runNativeStatsScan(force = false) {
       cachedNativeStats = result;
       lastNativeScanMs = Date.now();
       lastNativeScanDateKey = todayKey;
+      lastNativeIncludesOlder = Boolean(includeOlderHistory || scannedFullHistory);
       return result;
     }
   } catch (err) {
@@ -893,22 +1500,177 @@ export function runNativeStatsScan(force = false) {
   return cachedNativeStats;
 }
 
+async function executeNativeStatsScanAsync({ includeOlderHistory = false, scanSeq = 0 } = {}) {
+  let result = null;
+  try {
+    result = await scanNativeStatsJsAsync({ includeOlderHistory });
+  } catch (e) {
+    if (process.platform === 'win32') {
+      result = scanNativeStatsPs1();
+    } else {
+      throw e;
+    }
+  }
+
+  if (process.platform === 'win32' && (!result || (result.databases_scanned > 0 && result.generations_scanned === 0 && result.unreadable_databases === result.databases_scanned))) {
+    const psResult = scanNativeStatsPs1();
+    if (psResult) {
+      result = psResult;
+    }
+  }
+
+  if (result) {
+    const resolvedFull = Boolean(includeOlderHistory || scannedFullHistory);
+    const wouldDowngradeHistory = Boolean(
+      lastNativeIncludesOlder &&
+      !resolvedFull &&
+      lastNativeScanDateKey === getTodayKey(Date.now())
+    );
+    if (scanSeq >= committedNativeScanSeq && !wouldDowngradeHistory) {
+      committedNativeScanSeq = scanSeq;
+      cachedNativeStats = result;
+      lastNativeScanMs = Date.now();
+      lastNativeScanDateKey = getTodayKey(lastNativeScanMs);
+      lastNativeIncludesOlder = resolvedFull;
+    }
+  }
+  return result || cachedNativeStats;
+}
+
+function startSharedNativeScan(includeOlderHistory) {
+  const effectiveOlder = Boolean(includeOlderHistory || scannedFullHistory);
+  const scanSeq = ++activeNativeScanSeq;
+  const work = executeNativeStatsScanAsync({ includeOlderHistory: effectiveOlder, scanSeq });
+  inFlightNativeScanPromise = work;
+  inFlightIncludesOlder = effectiveOlder;
+  work.finally(() => {
+    if (inFlightNativeScanPromise === work) {
+      inFlightNativeScanPromise = null;
+      inFlightIncludesOlder = false;
+    }
+  });
+  return work;
+}
+
+/**
+ * Non-blocking async token scanner with concurrent request deduplication and
+ * Stale-While-Revalidate (SWR) background refresh after 60s TTL.
+ * @param {{ force?: boolean, includeOlderHistory?: boolean }} [options]
+ * @returns {Promise<object|null>}
+ */
+export async function runNativeStatsScanAsync({ force = false, includeOlderHistory = false } = {}) {
+  const now = Date.now();
+  const todayKey = getTodayKey(now);
+  const hasNeededHistory = !includeOlderHistory || lastNativeIncludesOlder || scannedFullHistory;
+
+  if (!force && cachedNativeStats && hasNeededHistory && lastNativeScanDateKey === todayKey) {
+    if (now - lastNativeScanMs < 60000) {
+      return cachedNativeStats;
+    }
+    if (!inFlightNativeScanPromise) {
+      startSharedNativeScan(includeOlderHistory || lastNativeIncludesOlder).catch((err) => {
+        console.warn('[agy-context] Background SWR token scan failed:', err.message);
+      });
+    }
+    return cachedNativeStats;
+  }
+
+  if (!force && inFlightNativeScanPromise && (!includeOlderHistory || inFlightIncludesOlder)) {
+    return inFlightNativeScanPromise;
+  }
+
+  try {
+    return await startSharedNativeScan(includeOlderHistory);
+  } catch (err) {
+    console.error('[agy-context] Async native token scan error:', err.message);
+    return cachedNativeStats;
+  }
+}
+
+/**
+ * Warms up the token index cache in the background on sidecar startup.
+ */
+export async function warmupGlobalTokenIndex() {
+  if (cachedNativeStats || inFlightNativeScanPromise) return cachedNativeStats;
+  return runNativeStatsScanAsync({ force: false, includeOlderHistory: false });
+}
+
+/**
+ * Returns cached 7-day token summary without triggering any new SQLite scan.
+ */
+export function getCachedWeeklyTokenSummary() {
+  if (!cachedNativeStats || !cachedNativeStats.last_7_days) return null;
+  const d7 = cachedNativeStats.last_7_days;
+  return {
+    totalTokens: Number(d7.total_tokens || 0),
+    compactTotal: formatCompactNumber(Number(d7.total_tokens || 0)),
+    cost: Number(d7.cost || 0),
+    requests: Number(d7.request_count || 0)
+  };
+}
+
 /**
  * Aggregates local Token metrics across Antigravity records by date range.
  * 100% Native Antigravity SQLite & Protobuf scanning (q1u native, zero external dependencies).
  * @param {string} [range='today'] 'today' | 'yesterday' | '3d' | '7d' | '30d'
  * @returns {object} Aggregated local token usage data
  */
-export function analyzeGlobalTokens(range = 'today') {
-  const validRanges = new Set(['today', 'yesterday', '3d', '7d', '30d']);
+function parseYmdDate(str) {
+  if (typeof str !== 'string') return null;
+  const m = str.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== (mo - 1) || dt.getDate() !== d) return null;
+  return dt;
+}
+
+function resolveIncludeOlderHistory(range, options) {
+  if (range !== 'custom') return false;
+  const sDt = parseYmdDate(options.start);
+  if (!sDt) return false;
+  const now = new Date();
+  const d30Start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+  return sDt < d30Start;
+}
+
+export function analyzeGlobalTokens(range = 'today', options = {}) {
+  const validRanges = new Set(['today', 'yesterday', '3d', '7d', '30d', 'custom']);
   if (!validRanges.has(range)) range = 'today';
 
-  const raw = runNativeStatsScan() || {};
+  const includeOlderHistory = resolveIncludeOlderHistory(range, options);
+  const raw = runNativeStatsScan(Boolean(options.force), { includeOlderHistory }) || {};
+  return buildGlobalTokensResponse(raw, range, options);
+}
+
+/**
+ * Non-blocking async variant of analyzeGlobalTokens used by the Sidecar HTTP server.
+ * @param {string} [range='today']
+ * @param {object} [options]
+ * @returns {Promise<object>}
+ */
+export async function analyzeGlobalTokensAsync(range = 'today', options = {}) {
+  const validRanges = new Set(['today', 'yesterday', '3d', '7d', '30d', 'custom']);
+  if (!validRanges.has(range)) range = 'today';
+
+  const includeOlderHistory = resolveIncludeOlderHistory(range, options);
+  const raw = (await runNativeStatsScanAsync({ force: Boolean(options.force), includeOlderHistory })) || {};
+  return buildGlobalTokensResponse(raw, range, options);
+}
+
+function buildGlobalTokensResponse(raw, range = 'today', options = {}) {
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
-  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const fmtDate = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const todayDateObj = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayStr = fmtDate(todayDateObj);
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  const yesterdayStr = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`;
+  const yesterdayStr = fmtDate(yesterday);
+
+  let startDateStr = todayStr;
+  let endDateStr = todayStr;
+  let customHourlyMap = null;
+  let customDailyMap = null;
 
   let rangeLabel = '今天';
   let targetTotals = raw.today || { input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0, request_count: 0 };
@@ -920,20 +1682,105 @@ export function analyzeGlobalTokens(range = 'today') {
     targetModels = raw.by_model_today || [];
   } else if (range === 'yesterday') {
     rangeLabel = '昨天';
+    startDateStr = yesterdayStr;
+    endDateStr = yesterdayStr;
     targetTotals = raw.yesterday || targetTotals;
     targetModels = raw.by_model_yesterday || [];
   } else if (range === '3d') {
     rangeLabel = '近 3 天';
+    startDateStr = fmtDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2));
     targetTotals = raw.last_3_days || targetTotals;
     targetModels = raw.by_model_3_days || [];
   } else if (range === '7d') {
     rangeLabel = '近 7 天';
+    startDateStr = fmtDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
     targetTotals = raw.last_7_days || targetTotals;
     targetModels = raw.by_model_7_days || [];
   } else if (range === '30d') {
     rangeLabel = '近 30 天';
+    startDateStr = fmtDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29));
     targetTotals = raw.last_30_days || targetTotals;
     targetModels = raw.by_model || [];
+  } else if (range === 'custom') {
+    let sDt = parseYmdDate(options.start);
+    let eDt = parseYmdDate(options.end);
+    if (!eDt) eDt = todayDateObj;
+    if (!sDt) sDt = new Date(eDt.getFullYear(), eDt.getMonth(), eDt.getDate() - 6);
+    if (sDt > eDt) [sDt, eDt] = [eDt, sDt];
+    const spanDays = Math.round((eDt - sDt) / 86400000) + 1;
+    if (spanDays > 366) {
+      sDt = new Date(eDt.getFullYear(), eDt.getMonth(), eDt.getDate() - 365);
+    }
+    startDateStr = fmtDate(sDt);
+    endDateStr = fmtDate(eDt);
+    rangeLabel = startDateStr === endDateStr ? startDateStr : `${startDateStr} ~ ${endDateStr}`;
+
+    const mkTotals = () => ({ input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0, request_count: 0, cost: 0 });
+    const cTot = mkTotals();
+    const cModels = new Map();
+    customHourlyMap = {};
+    customDailyMap = new Map();
+
+    if (Array.isArray(raw.all_events)) {
+      const startSec = Math.floor(sDt.getTime() / 1000);
+      const endSec = Math.floor(new Date(eDt.getFullYear(), eDt.getMonth(), eDt.getDate(), 23, 59, 59, 999).getTime() / 1000);
+      for (const e of raw.all_events) {
+        if (e.timestamp_seconds < startSec || e.timestamp_seconds > endSec) continue;
+        const dt = new Date(e.timestamp_seconds * 1000);
+        const dateStr = fmtDate(dt);
+        if (dateStr < startDateStr || dateStr > endDateStr) continue;
+
+        const pricing = getModelPricing(e.model);
+        const evCost = pricing
+          ? (e.input_tokens / 1e6 * pricing.input) + (e.cached_tokens / 1e6 * pricing.cached) + (e.output_tokens / 1e6 * pricing.output)
+          : 0;
+
+        const acc = (t) => {
+          t.input_tokens += e.input_tokens;
+          t.output_tokens += e.output_tokens;
+          t.cached_tokens += e.cached_tokens;
+          t.total_tokens += e.total_tokens;
+          t.request_count += 1;
+          t.cost += evCost;
+        };
+        acc(cTot);
+        if (!cModels.has(e.model)) cModels.set(e.model, mkTotals());
+        acc(cModels.get(e.model));
+
+        if (!customDailyMap.has(dateStr)) customDailyMap.set(dateStr, mkTotals());
+        acc(customDailyMap.get(dateStr));
+
+        if (startDateStr === endDateStr) {
+          const hhKey = pad(dt.getHours()) + ':00';
+          if (!customHourlyMap[hhKey]) customHourlyMap[hhKey] = mkTotals();
+          acc(customHourlyMap[hhKey]);
+        }
+      }
+      targetTotals = cTot;
+      targetModels = Array.from(cModels.entries())
+        .map(([model, t]) => ({ model, ...t }))
+        .sort((a, b) => b.total_tokens - a.total_tokens);
+    } else {
+      for (const d of (raw.daily || [])) {
+        if (!d || !d.date || d.date < startDateStr || d.date > endDateStr) continue;
+        cTot.input_tokens += Number(d.input_tokens || 0);
+        cTot.output_tokens += Number(d.output_tokens || 0);
+        cTot.cached_tokens += Number(d.cached_tokens || 0);
+        cTot.total_tokens += Number(d.total_tokens || 0);
+        cTot.request_count += Number(d.request_count || 0);
+        cTot.cost += Number(d.cost || 0);
+        customDailyMap.set(d.date, d);
+      }
+      if (startDateStr === endDateStr) {
+        for (const h of (raw.hourly || [])) {
+          if (h.hour && h.hour.startsWith(startDateStr)) {
+            customHourlyMap[h.hour.split(' ')[1] || ''] = h;
+          }
+        }
+      }
+      targetTotals = cTot;
+      targetModels = [];
+    }
   }
 
   const totalInput = Number(targetTotals.input_tokens || 0);
@@ -987,92 +1834,181 @@ export function analyzeGlobalTokens(range = 'today') {
   const avgInputTokens = totalRequests ? Math.round((totalInput + totalCache) / totalRequests) : 0;
 
   // Chart buckets
-  const isHourly = (range === 'today' || range === 'yesterday');
+  const isHourly = (range === 'today' || range === 'yesterday' || (range === 'custom' && startDateStr === endDateStr));
   const buckets = [];
   let xLabels = [];
   let defaultActiveIndex = 0;
+  let granularity = isHourly ? 'hourly' : 'daily';
+
+  const appendBucket = (labelTime, bucketStats, rawIdx, state) => {
+    const bTot = Number(bucketStats.total_tokens || 0);
+    const bInp = Number(bucketStats.input_tokens || 0);
+    const bOut = Number(bucketStats.output_tokens || 0);
+    const bCch = Number(bucketStats.cached_tokens || 0);
+    const bReq = Number(bucketStats.request_count || 0);
+    const cost = Number(bucketStats.cost || 0);
+
+    buckets.push({
+      time: labelTime,
+      rawTotal: bTot,
+      compactTotal: formatCompactNumber(bTot),
+      fullTotal: bTot.toLocaleString() + ' Token',
+      inputCompact: formatCompactNumber(bInp),
+      rawInput: bInp,
+      outputCompact: formatCompactNumber(bOut),
+      rawOutput: bOut,
+      cacheCompact: formatCompactNumber(bCch),
+      rawCache: bCch,
+      requests: bReq,
+      cost: '$' + cost.toFixed(2),
+      rawCost: Number(cost.toFixed(2))
+    });
+    if (bTot > 0) state.latestActiveIndex = rawIdx;
+  };
 
   if (isHourly) {
     xLabels = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', '23:00'];
-    const targetDate = range === 'today' ? todayStr : yesterdayStr;
-    const hourlyMap = {};
-    for (const h of (raw.hourly || [])) {
-      if (h.hour.startsWith(targetDate)) {
-        const hh = h.hour.split(' ')[1] || '';
-        hourlyMap[hh] = h;
+    const targetDate = range === 'today' ? todayStr : (range === 'yesterday' ? yesterdayStr : startDateStr);
+    let hourlyMap = customHourlyMap;
+    if (!hourlyMap) {
+      hourlyMap = {};
+      for (const h of (raw.hourly || [])) {
+        if (h.hour.startsWith(targetDate)) {
+          const hh = h.hour.split(' ')[1] || '';
+          hourlyMap[hh] = h;
+        }
       }
     }
 
+    const hourState = { latestActiveIndex: 0 };
     for (let h = 0; h < 24; h++) {
       const hh = String(h).padStart(2, '0') + ':00';
       const b = hourlyMap[hh] || { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0, request_count: 0 };
-      const bTot = Number(b.total_tokens || 0);
-      const bInp = Number(b.input_tokens || 0);
-      const bOut = Number(b.output_tokens || 0);
-      const bCch = Number(b.cached_tokens || 0);
-      const bReq = Number(b.request_count || 0);
-      const cost = Number(b.cost || 0);
-
-      buckets.push({
-        time: hh,
-        rawTotal: bTot,
-        compactTotal: formatCompactNumber(bTot),
-        fullTotal: bTot.toLocaleString() + ' Token',
-        inputCompact: formatCompactNumber(bInp),
-        rawInput: bInp,
-        outputCompact: formatCompactNumber(bOut),
-        rawOutput: bOut,
-        cacheCompact: formatCompactNumber(bCch),
-        rawCache: bCch,
-        requests: bReq,
-        cost: '$' + cost.toFixed(2),
-        rawCost: Number(cost.toFixed(2))
-      });
-      if (bTot > 0) defaultActiveIndex = h;
+      appendBucket(hh, b, h, hourState);
     }
+    defaultActiveIndex = hourState.latestActiveIndex;
   } else {
-    // Daily range: always generate the exact calendar day window [today - (N-1) .. today]
-    const dailyByDate = new Map();
-    for (const d of (raw.daily || [])) {
-      if (d && d.date) dailyByDate.set(d.date, d);
+    // Daily range: always generate the exact calendar day window, then downsample cleanly on long spans
+    const dailyByDate = customDailyMap || new Map();
+    if (!customDailyMap) {
+      for (const d of (raw.daily || [])) {
+        if (d && d.date) dailyByDate.set(d.date, d);
+      }
     }
-    const totalDays = range === '3d' ? 3 : (range === '7d' ? 7 : 30);
-    let latestActiveIndex = -1;
     const filteredDaily = [];
-    for (let offset = totalDays - 1; offset >= 0; offset--) {
-      const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
-      const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-      filteredDaily.push({ date: dateStr, ...(dailyByDate.get(dateStr) || {}) });
+    if (range === 'custom') {
+      const sDt = parseYmdDate(startDateStr) || todayDateObj;
+      const eDt = parseYmdDate(endDateStr) || todayDateObj;
+      for (let dt = new Date(sDt); dt <= eDt; dt = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1)) {
+        const dateStr = fmtDate(dt);
+        filteredDaily.push({ date: dateStr, ...(dailyByDate.get(dateStr) || {}) });
+      }
+    } else {
+      const totalDays = range === '3d' ? 3 : (range === '7d' ? 7 : 30);
+      for (let offset = totalDays - 1; offset >= 0; offset--) {
+        const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+        const dateStr = fmtDate(dt);
+        filteredDaily.push({ date: dateStr, ...(dailyByDate.get(dateStr) || {}) });
+      }
     }
 
-    filteredDaily.forEach((d, idx) => {
-      const dTot = Number(d.total_tokens || 0);
-      const dInp = Number(d.input_tokens || 0);
-      const dOut = Number(d.output_tokens || 0);
-      const dCch = Number(d.cached_tokens || 0);
-      const dReq = Number(d.request_count || 0);
-      const cost = Number(d.cost || 0);
+    const bucketState = { latestActiveIndex: -1 };
+    const totalDays = filteredDaily.length;
 
-      const shortDate = d.date.slice(5); // MM-DD
-      xLabels.push(shortDate);
-      buckets.push({
-        time: d.date,
-        rawTotal: dTot,
-        compactTotal: formatCompactNumber(dTot),
-        fullTotal: dTot.toLocaleString() + ' Token',
-        inputCompact: formatCompactNumber(dInp),
-        rawInput: dInp,
-        outputCompact: formatCompactNumber(dOut),
-        rawOutput: dOut,
-        cacheCompact: formatCompactNumber(dCch),
-        rawCache: dCch,
-        requests: dReq,
-        cost: '$' + cost.toFixed(2),
-        rawCost: Number(cost.toFixed(2))
+    if (totalDays <= 31) {
+      granularity = 'daily';
+      filteredDaily.forEach((d, idx) => {
+        xLabels.push(d.date.slice(5)); // MM-DD
+        appendBucket(d.date, d, idx, bucketState);
       });
-      if (dTot > 0) latestActiveIndex = idx;
-    });
-    defaultActiveIndex = latestActiveIndex >= 0 ? latestActiveIndex : Math.max(0, buckets.length - 1);
+    } else if (totalDays <= 180) {
+      granularity = 'weekly';
+      const crossYear = startDateStr.slice(0, 4) !== endDateStr.slice(0, 4);
+      const weeksMap = new Map();
+      for (const d of filteredDaily) {
+        const dt = parseYmdDate(d.date);
+        const offsetFromMon = (dt.getDay() + 6) % 7;
+        const monDt = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - offsetFromMon);
+        const weekKey = fmtDate(monDt);
+        if (!weeksMap.has(weekKey)) {
+          weeksMap.set(weekKey, {
+            startDate: d.date,
+            endDate: d.date,
+            total_tokens: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            request_count: 0,
+            cost: 0
+          });
+        }
+        const grp = weeksMap.get(weekKey);
+        if (d.date < grp.startDate) grp.startDate = d.date;
+        if (d.date > grp.endDate) grp.endDate = d.date;
+        grp.total_tokens += Number(d.total_tokens || 0);
+        grp.input_tokens += Number(d.input_tokens || 0);
+        grp.output_tokens += Number(d.output_tokens || 0);
+        grp.cached_tokens += Number(d.cached_tokens || 0);
+        grp.request_count += Number(d.request_count || 0);
+        grp.cost += Number(d.cost || 0);
+      }
+
+      Array.from(weeksMap.values()).forEach((grp, idx) => {
+        const sameDay = grp.startDate === grp.endDate;
+        const endPart = (grp.startDate.slice(0, 4) === grp.endDate.slice(0, 4))
+          ? grp.endDate.slice(5)
+          : grp.endDate;
+        const labelTime = sameDay ? grp.startDate : `${grp.startDate} ~ ${endPart}`;
+        xLabels.push(crossYear ? grp.startDate.slice(2, 7) : grp.startDate.slice(5));
+        appendBucket(labelTime, grp, idx, bucketState);
+      });
+    } else {
+      granularity = 'monthly';
+      const crossYear = startDateStr.slice(0, 4) !== endDateStr.slice(0, 4);
+      const distinctMonths = new Set(filteredDaily.map(d => d.date.slice(0, 7)));
+      const useQuarter = distinctMonths.size > 36;
+      const periodMap = new Map();
+
+      for (const d of filteredDaily) {
+        let pKey = d.date.slice(0, 7); // YYYY-MM
+        if (useQuarter) {
+          const monthNum = Number(d.date.slice(5, 7)) || 1;
+          const quarter = Math.ceil(monthNum / 3);
+          pKey = `${d.date.slice(0, 4)}-Q${quarter}`;
+        }
+        if (!periodMap.has(pKey)) {
+          periodMap.set(pKey, {
+            key: pKey,
+            total_tokens: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            request_count: 0,
+            cost: 0
+          });
+        }
+        const grp = periodMap.get(pKey);
+        grp.total_tokens += Number(d.total_tokens || 0);
+        grp.input_tokens += Number(d.input_tokens || 0);
+        grp.output_tokens += Number(d.output_tokens || 0);
+        grp.cached_tokens += Number(d.cached_tokens || 0);
+        grp.request_count += Number(d.request_count || 0);
+        grp.cost += Number(d.cost || 0);
+      }
+
+      Array.from(periodMap.values()).forEach((grp, idx) => {
+        let shortTick = grp.key;
+        if (!useQuarter) {
+          shortTick = crossYear ? `${grp.key.slice(2, 4)}/${grp.key.slice(5, 7)}` : `${Number(grp.key.slice(5, 7))}月`;
+        }
+        xLabels.push(shortTick);
+        appendBucket(grp.key, grp, idx, bucketState);
+      });
+    }
+
+    defaultActiveIndex = bucketState.latestActiveIndex >= 0
+      ? bucketState.latestActiveIndex
+      : Math.max(0, buckets.length - 1);
   }
 
   const perf = raw.recent_performance;
@@ -1087,6 +2023,8 @@ export function analyzeGlobalTokens(range = 'today') {
   return {
     range,
     rangeLabel,
+    startDate: startDateStr,
+    endDate: endDateStr,
     scanTime: now.toTimeString().split(' ')[0],
     latestRecordTime: latestRecordStr,
     totalTokens: {
@@ -1134,6 +2072,7 @@ export function analyzeGlobalTokens(range = 'today') {
     models: modelList,
     chart: {
       type: isHourly ? 'hourly' : 'daily',
+      granularity,
       xLabels,
       buckets,
       defaultActiveIndex
@@ -1229,20 +2168,25 @@ export async function getLanguageServerAuth(forceRefresh = false) {
     candidates.push({ port: logPort, protocol: 'https', csrf: logCsrf, source: 'main.log' });
   }
 
-  // 3. Fallback: query language_server process command line with platform awareness if CSRF is missing
+  // 3. Fallback: query language_server process command line asynchronously if CSRF is missing
   let anyCsrf = candidates.find(c => c.csrf)?.csrf || '';
   if (!anyCsrf) {
     try {
       if (process.platform === 'win32') {
-        const psCmd = 'Get-Process -Name language_server -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id';
-        const pid = cp.execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 3000 }).toString().trim().split(/\r?\n/)[0];
-        if (pid) {
-          const cmdLine = cp.execSync(`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId = ${pid}\\").CommandLine"`, { timeout: 3000 }).toString();
-          const m = cmdLine.match(/--csrf_token\s+([a-f0-9-]+)/i);
-          if (m) anyCsrf = m[1];
-        }
+        const psCmd = 'Get-CimInstance Win32_Process -Filter "Name=\'language_server.exe\'" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CommandLine -First 1';
+        const cmdLine = await new Promise((resolve) => {
+          cp.execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], {
+            timeout: 3000,
+            encoding: 'utf8',
+            windowsHide: true
+          }, (err, stdout) => resolve(err ? '' : String(stdout || '')));
+        });
+        const m = cmdLine.match(/--csrf_token\s+([a-f0-9-]+)/i);
+        if (m) anyCsrf = m[1];
       } else {
-        const psOutput = cp.execSync('ps aux', { timeout: 3000, encoding: 'utf8' });
+        const psOutput = await new Promise((resolve) => {
+          cp.execFile('ps', ['aux'], { timeout: 3000, encoding: 'utf8' }, (err, stdout) => resolve(err ? '' : String(stdout || '')));
+        });
         for (const line of psOutput.split('\n')) {
           if (line.includes('language_server') && !line.includes('grep')) {
             const m = line.match(/--csrf_token\s+([a-f0-9-]+)/i);
@@ -1430,26 +2374,52 @@ export function analyzeSessionPerformance(conversationId) {
   const dbPath = findConversationDbPath(conversationId);
   if (!dbPath) return null;
 
-  try {
-    const genRows = querySqlite(
-      dbPath,
-      'SELECT idx, hex(data) as h, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx',
-      5000
-    );
-    if (!genRows || genRows.length === 0) return null;
+  const dbSig = getDbFileSignature(dbPath);
+  const cachedPerf = dbSig ? sessionPerfCache.get(dbPath) : null;
+  if (cachedPerf && cachedPerf.sig === dbSig) {
+    return cachedPerf.result;
+  }
 
-    // Align with global scanNativeStatsJs() by identifying finished text-only replies
-    let stepCompleteFlags = null;
-    try {
-      const stepRows = querySqlite(
+  try {
+    let genRows = [];
+    let stepRows = null;
+    let useRawBlob = false;
+
+    if (DatabaseSync) {
+      const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 5000 });
+      try {
+        genRows = db.prepare('SELECT idx, data, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx').all();
+        try {
+          stepRows = db.prepare('SELECT status, CASE WHEN length(step_payload) <= 1048576 THEN step_payload ELSE NULL END as p FROM steps WHERE step_type = 15 ORDER BY idx').all();
+        } catch {}
+        useRawBlob = true;
+      } finally {
+        try { db.close(); } catch {}
+      }
+    } else {
+      genRows = querySqlite(
         dbPath,
-        'SELECT status, CASE WHEN length(step_payload) <= 1048576 THEN hex(step_payload) ELSE NULL END as p FROM steps WHERE step_type = 15 ORDER BY idx',
+        'SELECT idx, hex(data) as h, length(data) as len FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx',
         5000
       );
-      if (Array.isArray(stepRows) && stepRows.length >= genRows.length) {
-        stepCompleteFlags = stepRows.map(r => isTextCompleteStep(r.status, r.p));
-      }
-    } catch {}
+      try {
+        stepRows = querySqlite(
+          dbPath,
+          'SELECT status, CASE WHEN length(step_payload) <= 1048576 THEN hex(step_payload) ELSE NULL END as p FROM steps WHERE step_type = 15 ORDER BY idx',
+          5000
+        );
+      } catch {}
+    }
+
+    if (!genRows || genRows.length === 0) {
+      if (dbSig) setBoundedCache(sessionPerfCache, dbPath, { sig: dbSig, result: null }, 32);
+      return null;
+    }
+
+    let stepCompleteFlags = null;
+    if (Array.isArray(stepRows) && stepRows.length >= genRows.length) {
+      stepCompleteFlags = stepRows.map(r => isTextCompleteStep(r.status, r.p));
+    }
 
     const ttftValues = [];
     const completePrimaryBodySpeeds = [];
@@ -1471,9 +2441,10 @@ export function analyzeSessionPerformance(conversationId) {
     for (let ordinal = 0; ordinal < genRows.length; ordinal++) {
       const r = genRows[ordinal];
       const blobSize = Number(r.len || 0);
-      if (blobSize > 64 * 1024 * 1024 || !r.h) continue;
+      const rawPayload = useRawBlob ? r.data : r.h;
+      if (blobSize > 64 * 1024 * 1024 || !rawPayload) continue;
 
-      const buf = Buffer.from(r.h, 'hex');
+      const buf = useRawBlob ? rawPayload : Buffer.from(rawPayload, 'hex');
       const wrapped = getBytesField(1, buf);
       if (!wrapped) continue;
 
@@ -1528,7 +2499,7 @@ export function analyzeSessionPerformance(conversationId) {
     const bodySpeedList = useFallbackBody ? fallbackBodySpeeds : primaryBodySpeeds;
     const bodySpeedLatest = useFallbackBody ? latestFallbackBodySpeed : latestPrimaryBodySpeed;
 
-    return {
+    const perfResult = {
       turnCount: genRows.length,
       ttft: {
         latest: latestTtft,
@@ -1553,6 +2524,11 @@ export function analyzeSessionPerformance(conversationId) {
         sampleCount: durationTurnCount
       }
     };
+    const postDbSig = getDbFileSignature(dbPath) || dbSig;
+    if (postDbSig) {
+      setBoundedCache(sessionPerfCache, dbPath, { sig: postDbSig, result: perfResult }, 32);
+    }
+    return perfResult;
   } catch (e) {
     return null;
   }
@@ -1563,241 +2539,315 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
     throw new Error(`Transcript file not found: ${transcriptPath}`);
   }
 
-  const raw = fs.readFileSync(transcriptPath, 'utf8');
-  const lines = raw.trim().split('\n').filter(Boolean);
-
   let conversationId = options.conversationId || '';
   if (!conversationId) {
     const match = transcriptPath.match(/brain[/\\]([^/\\]+)/);
     if (match) conversationId = match[1];
   }
 
-  let modelName = 'Gemini 3.8 Flash (High)';
-  let modelLimit = MODEL_LIMITS.default;
+  const st = fs.statSync(transcriptPath);
+  const transcriptSig = `${st.mtimeMs}:${st.size}`;
+  let localParsed = transcriptParseCache.get(transcriptPath)?.sig === transcriptSig
+    ? transcriptParseCache.get(transcriptPath).data
+    : null;
 
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalCacheReadTokens = 0;
-  let totalModelTurns = 0;
+  if (!localParsed) {
+    const raw = fs.readFileSync(transcriptPath, 'utf8');
+    const lines = raw.trim().split('\n').filter(Boolean);
 
-  let systemTokens = 0;
-  let toolsTokens = 0;
-  let userTokens = 0;
-  let assistantTokens = 0;
+    let modelName = 'Gemini 3.8 Flash (High)';
+    let modelLimit = MODEL_LIMITS.default;
+    const resolveModelLimit = (name) => {
+      const lower = name.toLowerCase();
+      for (const [key, limit] of Object.entries(MODEL_LIMITS)) {
+        if (lower.includes(key)) return limit;
+      }
+      return MODEL_LIMITS.default;
+    };
 
-  const toolStats = {};
-  const timeline = [];
-  const compactions = [];
-  const topConsumers = [];
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheReadTokens = 0;
+    let totalModelTurns = 0;
 
-  let currentContext = 0;
-  let pendingCompaction = null;
+    let systemTokens = 0;
+    let toolsTokens = 0;
+    let userTokens = 0;
+    let assistantTokens = 0;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch (e) {
-      continue;
-    }
+    const toolStats = {};
+    const timeline = [];
+    const compactions = [];
 
-    const stepIndex = entry.step_index ?? i;
-    const type = entry.type || '';
-    const content = entry.content || '';
-    const thinking = entry.thinking || '';
+    let currentContext = 0;
+    let pendingCompaction = null;
+    let activePhase = null;
+    let pendingSwitchReason = null;
+    let prevTurnModel = null;
+    let prevTurnTsMs = null;
+    const lastTurnByModel = new Map();
 
-    if (type === 'USER_INPUT') {
-      const modelMatch = content.match(/Model Selection` from .*? to (.*?)\./);
-      if (modelMatch) {
-        modelName = modelMatch[1].trim();
-        for (const [key, limit] of Object.entries(MODEL_LIMITS)) {
-          if (modelName.toLowerCase().includes(key)) {
-            modelLimit = limit;
-            break;
-          }
+    const SWITCH_LABELS = {
+      plan_to_exec: 'Plan → Exec',
+      plan_review: 'Exec → Plan (Review)',
+      exec_to_plan: 'Exec → Plan',
+      manual: '手动切模型'
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch (e) {
+        continue;
+      }
+
+      const stepIndex = entry.step_index ?? i;
+      const type = entry.type || '';
+      const content = entry.content || '';
+      const thinking = entry.thinking || '';
+
+      if (type === 'USER_INPUT') {
+        const modelMatch = content.match(/Model Selection` from .*? to (.*?)\./);
+        if (modelMatch) {
+          modelName = modelMatch[1].trim();
+          modelLimit = resolveModelLimit(modelName);
+          pendingSwitchReason = 'manual';
+        } else if (activePhase === 'exec') {
+          activePhase = 'plan';
+          pendingSwitchReason = 'exec_to_plan';
+        }
+      } else if (type === 'SYSTEM_MESSAGE') {
+        if (/Plan mode is off\b|this turn runs on the execution model/i.test(content)) {
+          activePhase = 'exec';
+          pendingSwitchReason = 'plan_to_exec';
+        } else if (/\[plan review\]|Plan mode is on\b|this turn runs on the planning model/i.test(content)) {
+          activePhase = 'plan';
+          pendingSwitchReason = /\[plan review\]/i.test(content) ? 'plan_review' : 'exec_to_plan';
         }
       }
-    }
 
-    const isCompactionCheckpoint =
-      type === 'CHECKPOINT' ||
-      (type === 'SYSTEM_MESSAGE' && /Resuming from a compaction/i.test(content));
+      const isCompactionCheckpoint =
+        type === 'CHECKPOINT' ||
+        (type === 'SYSTEM_MESSAGE' && /Resuming from a compaction/i.test(content));
 
-    if (isCompactionCheckpoint) {
-      if (pendingCompaction) {
-        compactions.push({
-          index: compactions.length + 1,
-          step: pendingCompaction.step,
-          timestamp: pendingCompaction.timestamp,
-          before_turn: pendingCompaction.before_turn,
-          turn: null,
-          before_tokens: pendingCompaction.before_tokens,
-          after_tokens: null,
-          saved_tokens: null,
-          source: pendingCompaction.source
-        });
-      }
-      pendingCompaction = {
-        step: stepIndex,
-        timestamp: entry.created_at || null,
-        before_turn: totalModelTurns > 0 ? totalModelTurns : null,
-        before_tokens: currentContext > 0 ? currentContext : null,
-        source: type === 'CHECKPOINT' ? 'CHECKPOINT' : 'SYSTEM_MESSAGE'
-      };
-    }
-
-    if (type === 'PLANNER_RESPONSE' && typeof entry.input_tokens === 'number') {
-      totalModelTurns++;
-      const inp = entry.input_tokens;
-      const cch = entry.cache_read_tokens || 0;
-      const out = entry.output_tokens || 0;
-      const prevContext = currentContext;
-
-      totalInputTokens = inp;
-      totalCacheReadTokens = cch;
-      totalOutputTokens += out;
-      currentContext = inp + cch;
-
-      let compactionEvent = null;
-      if (pendingCompaction) {
-        const beforeTok = pendingCompaction.before_tokens ?? (prevContext > 0 ? prevContext : null);
-        const savedTok = typeof beforeTok === 'number' ? Math.max(0, beforeTok - currentContext) : null;
-        compactionEvent = {
-          index: compactions.length + 1,
-          step: pendingCompaction.step,
-          timestamp: pendingCompaction.timestamp || entry.created_at || null,
-          before_turn: pendingCompaction.before_turn,
-          turn: totalModelTurns,
-          before_tokens: beforeTok,
-          after_tokens: currentContext,
-          saved_tokens: savedTok,
-          source: pendingCompaction.source
-        };
-        compactions.push(compactionEvent);
-        pendingCompaction = null;
-      } else if (
-        prevContext >= 40000 &&
-        currentContext > 0 &&
-        currentContext < prevContext * 0.65 &&
-        (prevContext - currentContext) >= 25000
-      ) {
-        compactionEvent = {
-          index: compactions.length + 1,
+      if (isCompactionCheckpoint) {
+        if (pendingCompaction) {
+          compactions.push({
+            index: compactions.length + 1,
+            step: pendingCompaction.step,
+            timestamp: pendingCompaction.timestamp,
+            before_turn: pendingCompaction.before_turn,
+            turn: null,
+            before_tokens: pendingCompaction.before_tokens,
+            after_tokens: null,
+            saved_tokens: null,
+            source: pendingCompaction.source
+          });
+        }
+        pendingCompaction = {
           step: stepIndex,
           timestamp: entry.created_at || null,
-          before_turn: totalModelTurns - 1,
-          turn: totalModelTurns,
-          before_tokens: prevContext,
-          after_tokens: currentContext,
-          saved_tokens: prevContext - currentContext,
-          source: 'TOKEN_DROP'
+          before_turn: totalModelTurns > 0 ? totalModelTurns : null,
+          before_tokens: currentContext > 0 ? currentContext : null,
+          source: type === 'CHECKPOINT' ? 'CHECKPOINT' : 'SYSTEM_MESSAGE'
         };
-        compactions.push(compactionEvent);
       }
 
-      timeline.push({
-        step: stepIndex,
-        turn: totalModelTurns,
-        input_tokens: inp,
-        cache_tokens: cch,
-        output_tokens: out,
-        total_context: currentContext,
-        timestamp: entry.created_at || null,
-        ...(compactionEvent ? { compaction: compactionEvent } : {})
+      if (type === 'PLANNER_RESPONSE' && typeof entry.input_tokens === 'number') {
+        totalModelTurns++;
+        const inp = entry.input_tokens;
+        const cch = entry.cache_read_tokens || 0;
+        const out = entry.output_tokens || 0;
+        const prevContext = currentContext;
+
+        totalInputTokens = inp;
+        totalCacheReadTokens = cch;
+        totalOutputTokens += out;
+        currentContext = inp + cch;
+
+        const rawEntryModel = typeof entry.model === 'string' ? entry.model.trim() : '';
+        if (rawEntryModel) {
+          modelName = rawEntryModel;
+          modelLimit = resolveModelLimit(modelName);
+        }
+        const turnModel = rawEntryModel || modelName;
+
+        const toolCalls = Array.isArray(entry.tool_calls) ? entry.tool_calls : [];
+        const callsExitPlan = toolCalls.some(c => c && c.name === 'exit_plan_mode');
+        const callsEnterPlan = toolCalls.some(c => c && c.name === 'enter_plan_mode');
+        if (callsExitPlan && !activePhase) activePhase = 'plan';
+        if (callsEnterPlan && !activePhase) activePhase = 'exec';
+        const turnPhase = activePhase;
+
+        const modelSwitched = Boolean(prevTurnModel && turnModel !== prevTurnModel);
+        const switchLabel = modelSwitched ? (SWITCH_LABELS[pendingSwitchReason] || '模型切换') : null;
+
+        const tsMs = entry.created_at ? Date.parse(entry.created_at) : NaN;
+        const validTs = Number.isFinite(tsMs) ? tsMs : null;
+        const prevTurnGapSeconds = (validTs !== null && prevTurnTsMs !== null)
+          ? Math.max(0, Math.round((validTs - prevTurnTsMs) / 1000))
+          : null;
+        const modelKey = turnModel.toLowerCase();
+        const sameModelPrev = lastTurnByModel.get(modelKey) || null;
+        const sameModelPrevTurn = sameModelPrev ? sameModelPrev.turn : null;
+        const sameModelGapSeconds = (validTs !== null && sameModelPrev && sameModelPrev.tsMs !== null)
+          ? Math.max(0, Math.round((validTs - sameModelPrev.tsMs) / 1000))
+          : null;
+
+        let compactionEvent = null;
+        if (pendingCompaction) {
+          const beforeTok = pendingCompaction.before_tokens ?? (prevContext > 0 ? prevContext : null);
+          const savedTok = typeof beforeTok === 'number' ? Math.max(0, beforeTok - currentContext) : null;
+          compactionEvent = {
+            index: compactions.length + 1,
+            step: pendingCompaction.step,
+            timestamp: pendingCompaction.timestamp || entry.created_at || null,
+            before_turn: pendingCompaction.before_turn,
+            turn: totalModelTurns,
+            before_tokens: beforeTok,
+            after_tokens: currentContext,
+            saved_tokens: savedTok,
+            source: pendingCompaction.source
+          };
+          compactions.push(compactionEvent);
+          pendingCompaction = null;
+        } else if (
+          prevContext >= 40000 &&
+          currentContext > 0 &&
+          currentContext < prevContext * 0.65 &&
+          (prevContext - currentContext) >= 25000
+        ) {
+          compactionEvent = {
+            index: compactions.length + 1,
+            step: stepIndex,
+            timestamp: entry.created_at || null,
+            before_turn: totalModelTurns - 1,
+            turn: totalModelTurns,
+            before_tokens: prevContext,
+            after_tokens: currentContext,
+            saved_tokens: prevContext - currentContext,
+            source: 'TOKEN_DROP'
+          };
+          compactions.push(compactionEvent);
+        }
+
+        timeline.push({
+          step: stepIndex,
+          turn: totalModelTurns,
+          model: turnModel,
+          ...(turnPhase ? { phase: turnPhase } : {}),
+          ...(modelSwitched ? {
+            model_switched: true,
+            prev_model: prevTurnModel,
+            switch_label: switchLabel
+          } : {}),
+          prev_turn_gap_seconds: prevTurnGapSeconds,
+          same_model_gap_seconds: sameModelGapSeconds,
+          same_model_prev_turn: sameModelPrevTurn,
+          input_tokens: inp,
+          cache_tokens: cch,
+          output_tokens: out,
+          total_context: currentContext,
+          timestamp: entry.created_at || null,
+          ...(compactionEvent ? { compaction: compactionEvent } : {})
+        });
+
+        prevTurnModel = turnModel;
+        if (validTs !== null) prevTurnTsMs = validTs;
+        lastTurnByModel.set(modelKey, { turn: totalModelTurns, tsMs: validTs });
+        pendingSwitchReason = null;
+        if (callsExitPlan) {
+          activePhase = 'exec';
+          pendingSwitchReason = 'plan_to_exec';
+        } else if (callsEnterPlan) {
+          activePhase = 'plan';
+          pendingSwitchReason = 'plan_review';
+        }
+      }
+
+      const estTokens = estimateTokens(content) + estimateTokens(thinking);
+
+      if (type === 'USER_INPUT' && content.includes('<system_prompt>')) {
+        systemTokens += estTokens;
+      } else if (type === 'USER_INPUT') {
+        userTokens += estTokens;
+      } else if (type === 'PLANNER_RESPONSE') {
+        assistantTokens += estTokens;
+      }
+
+      if (entry.tool_calls && Array.isArray(entry.tool_calls)) {
+        for (const call of entry.tool_calls) {
+          const name = call.name || 'unknown_tool';
+          const callArgs = JSON.stringify(call.args || {});
+          const callTokens = estimateTokens(callArgs);
+          toolsTokens += callTokens;
+
+          if (!toolStats[name]) {
+            toolStats[name] = { count: 0, estimatedTokens: 0 };
+          }
+          toolStats[name].count++;
+          toolStats[name].estimatedTokens += callTokens;
+        }
+      }
+
+      if (type === 'TOOL_OUTPUT') {
+        toolsTokens += estTokens;
+        const toolName = entry.source || 'Tool Result';
+        if (!toolStats[toolName]) {
+          toolStats[toolName] = { count: 0, estimatedTokens: 0 };
+        }
+        toolStats[toolName].estimatedTokens += estTokens;
+      }
+    }
+
+    if (pendingCompaction) {
+      compactions.push({
+        index: compactions.length + 1,
+        step: pendingCompaction.step,
+        timestamp: pendingCompaction.timestamp,
+        before_turn: pendingCompaction.before_turn,
+        turn: null,
+        before_tokens: pendingCompaction.before_tokens,
+        after_tokens: null,
+        saved_tokens: null,
+        source: pendingCompaction.source
       });
     }
 
-    const estTokens = estimateTokens(content) + estimateTokens(thinking);
-
-    if (type === 'USER_INPUT' && content.includes('<system_prompt>')) {
-      systemTokens += estTokens;
-      if (estTokens > 1500) {
-        topConsumers.push({
-          step_index: stepIndex,
-          type: 'SYSTEM_INSTRUCTIONS',
-          label: 'System Prompt / Guidelines',
-          tokens: estTokens,
-          details: content.substring(0, 100) + '...'
-        });
-      }
-    } else if (type === 'USER_INPUT') {
-      userTokens += estTokens;
-      if (estTokens > 1000) {
-        topConsumers.push({
-          step_index: stepIndex,
-          type: 'USER_INPUT',
-          label: 'User Message',
-          tokens: estTokens,
-          details: content.substring(0, 100) + '...'
-        });
-      }
-    } else if (type === 'PLANNER_RESPONSE') {
-      assistantTokens += estTokens;
+    if (currentContext === 0) {
+      currentContext = systemTokens + toolsTokens + userTokens + assistantTokens;
     }
 
-    if (entry.tool_calls && Array.isArray(entry.tool_calls)) {
-      for (const call of entry.tool_calls) {
-        const name = call.name || 'unknown_tool';
-        const callArgs = JSON.stringify(call.args || {});
-        const callTokens = estimateTokens(callArgs);
-        toolsTokens += callTokens;
-
-        if (!toolStats[name]) {
-          toolStats[name] = { count: 0, estimatedTokens: 0 };
-        }
-        toolStats[name].count++;
-        toolStats[name].estimatedTokens += callTokens;
-      }
-    }
-
-    if (type === 'TOOL_OUTPUT') {
-      toolsTokens += estTokens;
-      const toolName = entry.source || 'Tool Result';
-      if (!toolStats[toolName]) {
-        toolStats[toolName] = { count: 0, estimatedTokens: 0 };
-      }
-      toolStats[toolName].estimatedTokens += estTokens;
-
-      if (estTokens > 1200) {
-        topConsumers.push({
-          step_index: stepIndex,
-          type: 'TOOL_OUTPUT',
-          label: `Tool Output: ${toolName}`,
-          tokens: estTokens,
-          details: content.substring(0, 100) + '...'
-        });
-      }
-    }
+    localParsed = {
+      modelName,
+      modelLimit,
+      totalInputTokens,
+      totalOutputTokens,
+      totalCacheReadTokens,
+      totalModelTurns,
+      systemTokens,
+      toolsTokens,
+      userTokens,
+      assistantTokens,
+      currentContext,
+      toolStats,
+      timeline,
+      compactions
+    };
+    setBoundedCache(transcriptParseCache, transcriptPath, { sig: transcriptSig, data: localParsed }, 16);
   }
 
-  if (pendingCompaction) {
-    compactions.push({
-      index: compactions.length + 1,
-      step: pendingCompaction.step,
-      timestamp: pendingCompaction.timestamp,
-      before_turn: pendingCompaction.before_turn,
-      turn: null,
-      before_tokens: pendingCompaction.before_tokens,
-      after_tokens: null,
-      saved_tokens: null,
-      source: pendingCompaction.source
-    });
-    pendingCompaction = null;
-  }
+  let modelLimit = localParsed.modelLimit;
+  let currentContext = localParsed.currentContext;
 
-  if (currentContext === 0) {
-    currentContext = systemTokens + toolsTokens + userTokens + assistantTokens;
-  }
-
-  // Official dynamic telemetry from Antigravity Language Server (Connect-RPC Streaming)
+  // Always fetch live Language Server telemetry & cached session DB performance dynamically
   let officialUsage = null;
   if (conversationId) {
     try {
       officialUsage = await fetchOfficialContextUsage(conversationId);
-    } catch (e) {
-      // Graceful fallback to transcript
-    }
+    } catch {}
   }
 
   if (officialUsage) {
@@ -1811,19 +2861,19 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
 
   let breakdown = [];
   if (officialUsage && Array.isArray(officialUsage.tokenGroups) && officialUsage.tokenGroups.length > 0) {
-    const sysGroup = officialUsage.tokenGroups.find(g => 
+    const sysGroup = officialUsage.tokenGroups.find(g =>
       g.type === 'TOKEN_TYPE_SYSTEM_PROMPT' || (g.name && g.name.toLowerCase().includes('system'))
     );
-    const toolGroup = officialUsage.tokenGroups.find(g => 
+    const toolGroup = officialUsage.tokenGroups.find(g =>
       g.type === 'TOKEN_TYPE_TOOLS' || (g.name && g.name.toLowerCase().includes('tool'))
     );
-    const chatGroup = officialUsage.tokenGroups.find(g => 
+    const chatGroup = officialUsage.tokenGroups.find(g =>
       g.type === 'TOKEN_TYPE_CHAT_MESSAGES' || (g.name && g.name.toLowerCase().includes('chat'))
     );
 
-    const sysTok = sysGroup ? sysGroup.numTokens : systemTokens;
-    const toolTok = toolGroup ? toolGroup.numTokens : toolsTokens;
-    const chatTok = chatGroup ? chatGroup.numTokens : (userTokens + assistantTokens);
+    const sysTok = sysGroup ? sysGroup.numTokens : localParsed.systemTokens;
+    const toolTok = toolGroup ? toolGroup.numTokens : localParsed.toolsTokens;
+    const chatTok = chatGroup ? chatGroup.numTokens : (localParsed.userTokens + localParsed.assistantTokens);
 
     const totalGroupTok = (sysTok + toolTok + chatTok) || currentContext || 1;
     const sysPct = Math.round((sysTok / totalGroupTok) * 100);
@@ -1836,30 +2886,27 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
       { key: 'chat', label: 'Chat Messages', tokens: chatTok, percent: chatPct }
     ];
   } else {
-    // Transcript-derived 4-category fallback
-    const categorySum = systemTokens + toolsTokens + userTokens + assistantTokens || 1;
-    const sysPct = Math.round((systemTokens / categorySum) * 100);
-    const toolPct = Math.round((toolsTokens / categorySum) * 100);
-    const userPct = Math.round((userTokens / categorySum) * 100);
+    const categorySum = localParsed.systemTokens + localParsed.toolsTokens + localParsed.userTokens + localParsed.assistantTokens || 1;
+    const sysPct = Math.round((localParsed.systemTokens / categorySum) * 100);
+    const toolPct = Math.round((localParsed.toolsTokens / categorySum) * 100);
+    const userPct = Math.round((localParsed.userTokens / categorySum) * 100);
     const modelPct = Math.max(0, 100 - sysPct - toolPct - userPct);
 
     breakdown = [
-      { key: 'system', label: 'System & Guidelines', tokens: systemTokens, percent: sysPct },
-      { key: 'tools', label: 'Tool Calls & Outputs', tokens: toolsTokens, percent: toolPct },
-      { key: 'user', label: 'User Instructions', tokens: userTokens, percent: userPct },
-      { key: 'model', label: 'Model Responses', tokens: assistantTokens, percent: modelPct }
+      { key: 'system', label: 'System & Guidelines', tokens: localParsed.systemTokens, percent: sysPct },
+      { key: 'tools', label: 'Tool Calls & Outputs', tokens: localParsed.toolsTokens, percent: toolPct },
+      { key: 'user', label: 'User Instructions', tokens: localParsed.userTokens, percent: userPct },
+      { key: 'model', label: 'Model Responses', tokens: localParsed.assistantTokens, percent: modelPct }
     ];
   }
 
   const usagePercent = Math.min(100, Number(((currentContext / modelLimit) * 100).toFixed(1)));
   const remainingTokens = Math.max(0, modelLimit - currentContext);
 
-  const totalInputWindow = totalInputTokens + totalCacheReadTokens;
-  const cacheHitRatio = totalInputWindow > 0 
-    ? Number(((totalCacheReadTokens / totalInputWindow) * 100).toFixed(1))
+  const totalInputWindow = localParsed.totalInputTokens + localParsed.totalCacheReadTokens;
+  const cacheHitRatio = totalInputWindow > 0
+    ? Number(((localParsed.totalCacheReadTokens / totalInputWindow) * 100).toFixed(1))
     : 0;
-
-  topConsumers.sort((a, b) => b.tokens - a.tokens);
 
   let healthStatus = '良好 (Healthy)';
   let healthLevel = 'info';
@@ -1871,36 +2918,12 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
     healthLevel = 'warning';
   }
 
-  const recommendations = [];
-  if (usagePercent > 60) {
-    recommendations.push({
-      level: 'warning',
-      title: '上下文占用较高',
-      action: '建议在聊天框中输入 `/compact` 压缩上下文，释放空间以维持最高模型推理质量。'
-    });
-  }
-  const toolTokensForCheck = officialUsage ? (breakdown.find(b => b.key === 'tools')?.tokens || 0) : toolsTokens;
-  if (toolTokensForCheck > (currentContext * 0.5)) {
-    recommendations.push({
-      level: 'tip',
-      title: '工具输出占比较大 (>50%)',
-      action: '阅读大文件或运行大命令产生了较多上下文，建议在工具调用中限制读取行数或使用特定搜索。'
-    });
-  }
-  if (recommendations.length === 0) {
-    recommendations.push({
-      level: 'healthy',
-      title: '上下文状态极佳',
-      action: 'Prompt 缓存利用率良好，无需执行额外压缩。'
-    });
-  }
-
   const performance = conversationId ? analyzeSessionPerformance(conversationId) : null;
 
   return {
     meta: {
       conversationId,
-      model: modelName,
+      model: localParsed.modelName,
       modelLimit,
       isOfficialTelemetry: !!officialUsage,
       analyzedAt: new Date().toISOString()
@@ -1913,17 +2936,15 @@ export async function analyzeTranscript(transcriptPath, options = {}) {
       healthStatus,
       healthLevel,
       cacheHitRatio,
-      cacheTokens: totalCacheReadTokens,
-      uncachedTokens: totalInputTokens,
-      totalOutputTokens,
-      totalModelTurns
+      cacheTokens: localParsed.totalCacheReadTokens,
+      uncachedTokens: localParsed.totalInputTokens,
+      totalOutputTokens: localParsed.totalOutputTokens,
+      totalModelTurns: localParsed.totalModelTurns
     },
     performance,
     breakdown,
-    toolStats,
-    topConsumers: topConsumers.slice(0, 10),
-    timeline,
-    compactions,
-    recommendations
+    toolStats: localParsed.toolStats,
+    timeline: localParsed.timeline,
+    compactions: localParsed.compactions
   };
 }

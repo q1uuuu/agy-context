@@ -222,6 +222,9 @@ public class NativeTokenScanner {
         long start30Sec = new DateTimeOffset(start30Days).ToUnixTimeSeconds();
         long nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         long maxAge = 7 * 24 * 3600;
+        DateTime perfCutoffUtc = DateTime.UtcNow.AddDays(-8);
+
+        dbFiles.Sort((a, b) => File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)));
 
         // Scan archive db if exists
         string archivePath = Path.Combine(geminiDir, "antigravity", "token_usage_archive.db");
@@ -316,10 +319,14 @@ public class NativeTokenScanner {
                 if (p != null) source = Path.GetFileName(p);
             } catch {}
 
-            // Read steps
+            // Read steps (skip step_payload outside 7d window or once enough recent samples exist)
+            bool needPerfPayload = File.GetLastWriteTimeUtc(dbPath) >= perfCutoffUtc && samples.Count < 24;
+            string stepsQuery = needPerfPayload
+                ? "SELECT CASE WHEN length(metadata) <= 65536 THEN metadata ELSE NULL END, status, CASE WHEN length(step_payload) <= 1048576 THEN step_payload ELSE NULL END FROM steps WHERE step_type = 15 ORDER BY idx"
+                : "SELECT CASE WHEN length(metadata) <= 65536 THEN metadata ELSE NULL END, status, NULL FROM steps WHERE step_type = 15 ORDER BY idx";
             IntPtr stmt = IntPtr.Zero;
             List<Tuple<long?, bool>> stepRecords = new List<Tuple<long?, bool>>();
-            if (Prepare(db, "SELECT CASE WHEN length(metadata) <= 65536 THEN metadata ELSE NULL END, status, CASE WHEN length(step_payload) <= 1048576 THEN step_payload ELSE NULL END FROM steps WHERE step_type = 15 ORDER BY idx", -1, out stmt, IntPtr.Zero) == 0) {
+            if (Prepare(db, stepsQuery, -1, out stmt, IntPtr.Zero) == 0) {
                 while (Step(stmt) == 100) {
                     byte[] meta = ReadBlob(stmt, 0);
                     long status = ColumnInt64(stmt, 1);

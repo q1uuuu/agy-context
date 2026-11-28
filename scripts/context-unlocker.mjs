@@ -24,13 +24,30 @@ const BACKUP_META_FILE = path.join(BACKUPS_DIR, 'backup-meta.json');
 
 // Supported presets and their nominal/effective token budget
 export const PRESET_LIMITS = {
-  'dynamic': null, // Follow dynamic detected limit
   '900k': 900000,  // 900K token budget
   '512k': 512000,  // 512K token budget
   '256k': 256000   // 256K nominal official clamp limit
 };
 
 let cachedPythonCmd = null;
+let targetBinariesCache = null;
+const appVersionCache = new Map();
+const unlockInspectCache = new Map();
+
+export function clearUnlockCaches() {
+  targetBinariesCache = null;
+  appVersionCache.clear();
+  unlockInspectCache.clear();
+}
+
+function getBinaryStatSig(filePath) {
+  try {
+    const st = fs.statSync(filePath);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Resolves an active, working Python 3 executable across platforms.
@@ -115,6 +132,13 @@ export function computeFileSha256(filePath) {
 export function detectAppVersion(binaryPath, isDesktop) {
   if (!binaryPath || !fs.existsSync(binaryPath)) return null;
 
+  const statSig = getBinaryStatSig(binaryPath);
+  const cacheKey = statSig ? `${binaryPath}|${isDesktop ? 'desktop' : 'cli'}|${statSig}` : null;
+  if (cacheKey && appVersionCache.has(cacheKey)) {
+    return appVersionCache.get(cacheKey);
+  }
+
+  let detected = null;
   try {
     if (isDesktop) {
       if (process.platform === 'darwin') {
@@ -123,7 +147,7 @@ export function detectAppVersion(binaryPath, isDesktop) {
         if (fs.existsSync(plistPath)) {
           const content = fs.readFileSync(plistPath, 'utf8');
           const m = content.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/);
-          if (m && m[1]) return m[1].trim();
+          if (m && m[1]) detected = m[1].trim();
         }
       } else if (process.platform === 'win32') {
         // .../antigravity/resources/bin/language_server.exe -> ../../Antigravity.exe
@@ -132,9 +156,9 @@ export function detectAppVersion(binaryPath, isDesktop) {
           const escaped = exePath.replace(/'/g, "''");
           const ver = cp.execSync(
             `powershell -NoProfile -Command "(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion"`,
-            { timeout: 3000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
+            { timeout: 3000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }
           ).trim();
-          if (ver) return ver.replace(/\.0$/, '');
+          if (ver) detected = ver.replace(/\.0$/, '');
         }
       } else {
         // Linux: check resources/app/package.json or ../package.json
@@ -145,7 +169,10 @@ export function detectAppVersion(binaryPath, isDesktop) {
         for (const p of pkgCandidates) {
           if (fs.existsSync(p)) {
             const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
-            if (pkg.version) return String(pkg.version).trim();
+            if (pkg.version) {
+              detected = String(pkg.version).trim();
+              break;
+            }
           }
         }
       }
@@ -154,15 +181,19 @@ export function detectAppVersion(binaryPath, isDesktop) {
       const out = cp.execFileSync(binaryPath, ['--version'], {
         timeout: 2500,
         encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore']
+        stdio: ['pipe', 'pipe', 'ignore'],
+        windowsHide: true
       }).trim();
       const m = out.match(/(\d+\.\d+\.\d+[^\s]*)/);
-      if (m) return m[1];
-      if (out) return out.split(/\r?\n/)[0].trim();
+      if (m) detected = m[1];
+      else if (out) detected = out.split(/\r?\n/)[0].trim();
     }
   } catch (e) {}
 
-  return null;
+  if (cacheKey) {
+    appVersionCache.set(cacheKey, detected);
+  }
+  return detected;
 }
 
 /**
@@ -226,7 +257,12 @@ function cleanupStaleTempFiles(binaryPath) {
  * Resolves candidate binary paths across macOS, Linux, and Windows.
  * @returns {{ desktop: string|null, cli: string|null }}
  */
-export function resolveTargetBinaries() {
+export function resolveTargetBinaries(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && targetBinariesCache && (now - targetBinariesCache.ts < 60000)) {
+    return targetBinariesCache.value;
+  }
+
   const result = { desktop: null, cli: null };
   const isWin = process.platform === 'win32';
 
@@ -245,38 +281,39 @@ export function resolveTargetBinaries() {
     path.join(os.homedir(), '.local', 'share', 'antigravity', 'resources', 'bin', 'language_server')
   ];
 
-  // Try finding from running processes first
-  try {
-    if (isWin) {
-      const psCmd = 'Get-Process -Name language_server -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path | Select-Object -First 1';
-      const psOut = cp.execSync(`powershell -NoProfile -Command "${psCmd}"`, {
-        timeout: 3000,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore']
-      }).trim();
-      if (psOut && fs.existsSync(psOut)) {
-        result.desktop = psOut;
-      }
-    } else {
-      const ps = cp.execSync('ps aux | grep -E "language_server --standalone" | grep -v grep', {
-        encoding: 'utf8',
-        timeout: 3000,
-        stdio: ['pipe', 'pipe', 'ignore']
-      });
-      const match = ps.match(/(\/[^\s]+language_server)/);
-      if (match && fs.existsSync(match[1])) {
-        result.desktop = match[1];
-      }
+  // Fast static path scan first, avoiding slow PowerShell process inspection when binary exists at standard path
+  for (const p of desktopCandidates) {
+    if (fs.existsSync(p)) {
+      result.desktop = p;
+      break;
     }
-  } catch (e) {}
+  }
 
   if (!result.desktop) {
-    for (const p of desktopCandidates) {
-      if (fs.existsSync(p)) {
-        result.desktop = p;
-        break;
+    try {
+      if (isWin) {
+        const psCmd = 'Get-Process -Name language_server -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path | Select-Object -First 1';
+        const psOut = cp.execSync(`powershell -NoProfile -Command "${psCmd}"`, {
+          timeout: 3000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+          windowsHide: true
+        }).trim();
+        if (psOut && fs.existsSync(psOut)) {
+          result.desktop = psOut;
+        }
+      } else {
+        const ps = cp.execSync('ps aux | grep -E "language_server --standalone" | grep -v grep', {
+          encoding: 'utf8',
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'ignore']
+        });
+        const match = ps.match(/(\/[^\s]+language_server)/);
+        if (match && fs.existsSync(match[1])) {
+          result.desktop = match[1];
+        }
       }
-    }
+    } catch (e) {}
   }
 
   // 2. agy CLI Candidates
@@ -291,28 +328,32 @@ export function resolveTargetBinaries() {
     '/usr/local/bin/agy'
   ];
 
-  try {
-    const whichCmd = isWin ? 'where.exe agy' : 'which agy';
-    const whichAgy = cp.execSync(whichCmd, {
-      encoding: 'utf8',
-      timeout: 3000,
-      stdio: ['pipe', 'pipe', 'ignore']
-    }).trim();
-    const firstLine = whichAgy.split(/\r?\n/)[0].trim();
-    if (firstLine && fs.existsSync(firstLine)) {
-      result.cli = firstLine;
-    }
-  } catch (e) {}
-
-  if (!result.cli) {
-    for (const p of cliCandidates) {
-      if (fs.existsSync(p)) {
-        result.cli = p;
-        break;
-      }
+  for (const p of cliCandidates) {
+    if (fs.existsSync(p)) {
+      result.cli = p;
+      break;
     }
   }
 
+  if (!result.cli) {
+    try {
+      const whichCmd = isWin ? 'where.exe agy' : 'which agy';
+      const whichAgy = cp.execSync(whichCmd, {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'ignore'],
+        windowsHide: true
+      }).trim();
+      const firstLine = whichAgy.split(/\r?\n/)[0].trim();
+      if (firstLine && fs.existsSync(firstLine)) {
+        result.cli = firstLine;
+      }
+    } catch (e) {}
+  }
+
+  if (result.desktop || result.cli) {
+    targetBinariesCache = { ts: now, value: result };
+  }
   return result;
 }
 
@@ -376,12 +417,19 @@ export async function inspectBinaryUnlock(binaryPath, key = 'desktop') {
   }
 
   const preset = getSavedPreset();
-  const limitArg = preset.targetLimit ?? (preset.preset === 'dynamic' ? 0 : null);
+  const limitArg = preset.targetLimit ?? 512000;
+  const statSig = getBinaryStatSig(binaryPath);
+  const meta = readBackupMeta()[key];
+  const bakSig = meta?.backupPath ? (getBinaryStatSig(meta.backupPath) || 'missing') : 'none';
+  const cacheKey = statSig ? `${key}|${binaryPath}|${statSig}|${preset.preset}|${limitArg}|${bakSig}` : null;
+  if (cacheKey && unlockInspectCache.has(cacheKey)) {
+    return unlockInspectCache.get(cacheKey);
+  }
+
   const dry = await runPatchDryRun(binaryPath, limitArg);
   const appVersion = detectAppVersion(binaryPath, key === 'desktop');
 
   // Check if a valid version-bound backup exists for this binary
-  const meta = readBackupMeta()[key];
   let hasValidBackup = false;
   if (meta && meta.backupPath && fs.existsSync(meta.backupPath)) {
     if (!meta.appVersion || !appVersion || meta.appVersion === appVersion) {
@@ -389,7 +437,7 @@ export async function inspectBinaryUnlock(binaryPath, key = 'desktop') {
     }
   }
 
-  return {
+  const result = {
     path: binaryPath,
     exists: true,
     isUnlocked: dry.isUnlockedAtPreset,
@@ -398,14 +446,22 @@ export async function inspectBinaryUnlock(binaryPath, key = 'desktop') {
     hasBackup: hasValidBackup,
     appVersion
   };
+  if (cacheKey) {
+    unlockInspectCache.set(cacheKey, result);
+  }
+  return result;
 }
 
 /**
  * Gets overall unlock status for both Desktop and CLI
+ * @param {{ forceRefresh?: boolean }} [options]
  * @returns {Promise<{desktop: any, cli: any, activePreset: string, targetLimit: number|null}>}
  */
-export async function getOverallUnlockStatus() {
-  const binaries = resolveTargetBinaries();
+export async function getOverallUnlockStatus({ forceRefresh = false } = {}) {
+  if (forceRefresh) {
+    clearUnlockCaches();
+  }
+  const binaries = resolveTargetBinaries(forceRefresh);
   const [desktopStatus, cliStatus] = await Promise.all([
     binaries.desktop ? inspectBinaryUnlock(binaries.desktop, 'desktop') : Promise.resolve(null),
     binaries.cli ? inspectBinaryUnlock(binaries.cli, 'cli') : Promise.resolve(null)
@@ -516,7 +572,7 @@ function ensureVersionSafeBackup(item, isOfficialUnpatched) {
  * @returns {Promise<{success: boolean, message: string, output: string}>}
  */
 export async function applyUnlock(target = 'all') {
-  const binaries = resolveTargetBinaries();
+  const binaries = resolveTargetBinaries(true);
   const targets = [];
   if ((target === 'desktop' || target === 'all') && binaries.desktop) {
     targets.push({ key: 'desktop', name: '桌面端 Language Server', path: binaries.desktop, isDesktop: true });
@@ -544,13 +600,7 @@ export async function applyUnlock(target = 'all') {
     // 2. Patch binary in-place (skip legacy .bak next to binary; backups live cleanly in BACKUPS_DIR)
     const res = await new Promise((resolve) => {
       const args = [AGY_PATCH_PY, '--binary', item.path, '--in-place', '--no-backup'];
-      if (preset.targetLimit) {
-        args.push('--limit', String(preset.targetLimit));
-      } else if (preset.preset === 'dynamic') {
-        args.push('--limit', '0');
-      } else {
-        args.push('--limit', '512000');
-      }
+      args.push('--limit', String(preset.targetLimit || 512000));
 
       cp.execFile(py, args, { timeout: 30000 }, (err, stdout, stderr) => {
         const out = `${stdout || ''}\n${stderr || ''}`.trim();
@@ -584,6 +634,7 @@ export async function applyUnlock(target = 'all') {
   }
 
   const outputSummary = results.map(r => `[${r.name}] ${r.success ? '解锁成功' : '失败'}\n${r.output}`).join('\n\n');
+  clearUnlockCaches();
   const restartHint = process.platform === 'darwin'
     ? '请完全退出并重启 Antigravity 应用（Cmd+Q）以加载新进程。'
     : '请完全退出并重启 Antigravity 应用（在任务栏/托盘退出后重新打开）以加载新进程。';
@@ -602,7 +653,7 @@ export async function applyUnlock(target = 'all') {
  * @returns {Promise<{success: boolean, message: string}>}
  */
 export async function restoreOriginal(target = 'all') {
-  const binaries = resolveTargetBinaries();
+  const binaries = resolveTargetBinaries(true);
   const targets = [];
   if ((target === 'desktop' || target === 'all') && binaries.desktop) {
     targets.push({ key: 'desktop', name: '桌面端 language_server', path: binaries.desktop, isDesktop: true, codesignId: 'language_server' });
@@ -709,9 +760,11 @@ export async function restoreOriginal(target = 'all') {
     }
 
     if (anyRestored) {
+      clearUnlockCaches();
       return { success: true, message: messages.join('；') + '。' };
     }
     if (anyAlreadyOfficial && !anyBlocked) {
+      clearUnlockCaches();
       return { success: true, message: messages.join('；') + '。' };
     }
     return {
@@ -731,24 +784,25 @@ export function getSavedPreset() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-      const preset = data.preset || 'dynamic';
+      const rawPreset = data.preset;
+      const preset = Object.prototype.hasOwnProperty.call(PRESET_LIMITS, rawPreset) ? rawPreset : '512k';
       return {
         preset,
-        targetLimit: PRESET_LIMITS[preset] ?? null
+        targetLimit: PRESET_LIMITS[preset]
       };
     }
   } catch (e) {}
 
-  return { preset: 'dynamic', targetLimit: null };
+  return { preset: '512k', targetLimit: PRESET_LIMITS['512k'] };
 }
 
 /**
  * Saves chosen preset to plugin data and synchronizes to CLI settings.json if exists
- * @param {string} preset ('dynamic' | '900k' | '512k' | '256k')
- * @returns {{ preset: string, targetLimit: number|null, syncedCli: boolean }}
+ * @param {string} preset ('900k' | '512k' | '256k')
+ * @returns {{ preset: string, targetLimit: number, syncedCli: boolean }}
  */
 export function savePreset(preset) {
-  const validKey = PRESET_LIMITS.hasOwnProperty(preset) ? preset : 'dynamic';
+  const validKey = Object.prototype.hasOwnProperty.call(PRESET_LIMITS, preset) ? preset : '512k';
   try {
     if (!fs.existsSync(USER_CONFIG_DIR)) {
       fs.mkdirSync(USER_CONFIG_DIR, { recursive: true });
@@ -765,11 +819,9 @@ export function savePreset(preset) {
     const cliSettingsPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
     if (fs.existsSync(cliSettingsPath)) {
       const settings = JSON.parse(fs.readFileSync(cliSettingsPath, 'utf8'));
-      let cwVal = '';
+      let cwVal = '512K';
       if (validKey === '900k') cwVal = '900K';
-      else if (validKey === '512k') cwVal = '512K';
       else if (validKey === '256k') cwVal = '256K';
-      else cwVal = ''; // default / 1m
 
       settings.contextWindow = cwVal;
       fs.writeFileSync(cliSettingsPath, JSON.stringify(settings, null, 2), 'utf8');
@@ -779,7 +831,7 @@ export function savePreset(preset) {
 
   return {
     preset: validKey,
-    targetLimit: PRESET_LIMITS[validKey] ?? null,
+    targetLimit: PRESET_LIMITS[validKey],
     syncedCli
   };
 }

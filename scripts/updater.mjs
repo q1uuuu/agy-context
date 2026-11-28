@@ -315,27 +315,36 @@ function copyDirSync(src, dest) {
  */
 export async function restartSidecarService() {
   const auth = await getLanguageServerAuth(true);
+  const candidates = auth?.candidates?.length
+    ? auth.candidates
+    : (auth?.port ? [{ port: auth.port, protocol: auth.protocol || 'http', csrf: auth.csrf || '' }] : []);
 
-  if (auth && auth.port && auth.csrf) {
+  for (const cand of candidates) {
+    if (!cand.port || !cand.csrf) continue;
+    const client = cand.protocol === 'https' ? https : http;
     const makeRpc = (action) => new Promise((resolve) => {
       const payload = JSON.stringify({
         sidecarId: 'agy-context/context-panel',
         action
       });
 
-      const req = https.request({
+      const req = client.request({
         hostname: '127.0.0.1',
-        port: auth.port,
+        port: cand.port,
         path: '/exa.language_server_pb.LanguageServerService/ManageSidecar',
         method: 'POST',
         rejectUnauthorized: false,
         timeout: 3000,
         headers: {
           'Content-Type': 'application/json',
-          'x-codeium-csrf-token': auth.csrf,
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': cand.csrf,
           'Content-Length': Buffer.byteLength(payload)
         }
-      }, () => resolve(true));
+      }, (res) => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 300);
+      });
 
       req.on('error', () => resolve(false));
       req.on('timeout', () => { req.destroy(); resolve(false); });
@@ -344,11 +353,11 @@ export async function restartSidecarService() {
     });
 
     try {
-      await makeRpc('SIDECAR_ACTION_DISABLE');
+      const disabled = await makeRpc('SIDECAR_ACTION_DISABLE');
       await new Promise(r => setTimeout(r, 600));
-      await makeRpc('SIDECAR_ACTION_ENABLE');
-      return true;
-    } catch (e) {}
+      const enabled = await makeRpc('SIDECAR_ACTION_ENABLE');
+      if (disabled || enabled) return true;
+    } catch {}
   }
 
   // Fallback: spawn background process and exit self
